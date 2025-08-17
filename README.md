@@ -405,18 +405,6 @@ if (result != U64_OK) {
 
 ## Network Configuration
 
-### bsdsocket.library Setup
-
-Make sure bsdsocket.library is properly configured:
-
-```bash
-# Add to your startup-sequence or user-startup
-assign DEVS: SYS:Devs ADD
-assign LIBS: SYS:Libs ADD
-
-# Configure your TCP/IP stack (Miami, Genesis, etc.)
-```
-
 ### Firewall Settings
 
 Ensure your Ultimate64/Ultimate-II device allows HTTP connections on the configured port (usually 80).
