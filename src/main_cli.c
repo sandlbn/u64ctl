@@ -500,7 +500,17 @@ LoadSettings (char **host, char **password, UWORD *port)
   env_port = ReadEnvVar (ENV_ULTIMATE64_PORT);
   if (env_port)
     {
-      *port = (UWORD)atoi (env_port);
+      UWORD parsed_port = (UWORD)atoi (env_port);
+      if (parsed_port > 0 && parsed_port <= 65535)
+        {
+          *port = parsed_port;
+        }
+      else
+        {
+          PrintVerbose ("Invalid port in ENV: %s, using default 80", env_port);
+          *port = 80;
+          WriteEnvVar (ENV_ULTIMATE64_PORT, DEFAULT_PORT, TRUE);
+        }
       FreeMem (env_port, strlen (env_port) + 1);
     }
   else
@@ -538,6 +548,12 @@ SaveSettings (CONST_STRPTR host, CONST_STRPTR password, UWORD port)
       DeleteVar (ENV_ULTIMATE64_PASSWORD, GVF_GLOBAL_ONLY);
       /* Also remove from ENVARC: */
       DeleteFile ("ENVARC:" ENV_ULTIMATE64_PASSWORD);
+    }
+
+  if (port == 0)
+    {
+      port = 80; /* Default to 80 if somehow 0 was passed */
+      PrintVerbose ("Port was 0, defaulting to 80");
     }
 
   sprintf (port_str, "%d", port);
@@ -589,7 +605,8 @@ ExecuteCommand (U64Connection *conn, U64CommandType cmd, LONG *args,
           PrintError ("HOST argument required for sethost command");
           return 5;
         }
-      if (SaveSettings (host_arg, env_password, env_port))
+      /* Preserve the current port when setting host */
+      if (SaveSettings (host_arg, env_password, env_port ? env_port : 80))
         {
           PrintInfo ("Host set to: %s", host_arg);
         }
