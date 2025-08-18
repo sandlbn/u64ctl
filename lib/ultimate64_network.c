@@ -26,7 +26,7 @@
 /* Socket library base */
 #ifdef USE_BSDSOCKET
 struct Library *SocketBase = NULL;
-static int errno_storage = 0;
+int errno_storage = 0;
 #endif
 
 /* Network connection structure */

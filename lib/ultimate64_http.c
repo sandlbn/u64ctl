@@ -14,6 +14,10 @@
 #include "ultimate64_amiga.h"
 #include "ultimate64_private.h"
 
+#define READ_CHUNK_SIZE 1024
+#define INITIAL_BUFFER_SIZE 4096
+#define MAX_BUFFER_SIZE (128 * 1024) /* 128KB max */
+
 /* HTTP method strings */
 static const char *http_methods[] = { "GET", "POST", "PUT", "DELETE" };
 
@@ -110,15 +114,25 @@ U64_BuildHttpRequest (U64Connection *conn, HttpRequest *req)
 LONG
 U64_HttpRequest (U64Connection *conn, HttpRequest *req)
 {
-  STRPTR header;
-  UBYTE *response_buffer = NULL;
-  LONG result;
-  ULONG total_size = 0;
-  char line[1024];
-  ULONG content_length = 0;
-  ULONG header_len;
+#ifdef USE_BSDSOCKET
+  int sockfd = -1;
+  char *response_buffer = NULL;
+  char *chunk_buffer = NULL;
+  char *new_buffer = NULL;
+  LONG result = U64_ERR_GENERAL;
+  struct sockaddr_in server_addr;
+  struct hostent *server = NULL;
+  char request_header[1024];
+  BOOL dns_ok = FALSE;
+  size_t buffer_size = INITIAL_BUFFER_SIZE;
+  size_t total_size = 0;
+  int bytes_received;
+  char *json_start;
+  int retry_count = 0;
+  const int MAX_RETRIES = 3;
   int chunk_count = 0;
-  const int MAX_CHUNKS = 100;
+  extern struct Library *SocketBase;
+  extern int errno_storage;
 
   if (!conn || !req)
     {
@@ -126,57 +140,164 @@ U64_HttpRequest (U64Connection *conn, HttpRequest *req)
       return U64_ERR_INVALID;
     }
 
-  U64_DEBUG ("Starting HTTP request: %s %s", http_methods[req->method],
-             req->path ? (char *)req->path : "/");
+  U64_DEBUG ("=== HTTP Request Start ===");
+  U64_DEBUG ("Method: %s", http_methods[req->method]);
+  U64_DEBUG ("Path: %s", req->path ? (char *)req->path : "/");
+  U64_DEBUG ("Host: %s:%d", (char *)conn->host, conn->port);
 
   /* Initialize response fields */
   req->response = NULL;
   req->response_size = 0;
   req->status_code = 0;
 
-  /* Initialize network if needed */
-  result = U64_NetInit ();
-  if (result != U64_OK)
+  /* Check if socket library is available */
+  if (!SocketBase)
     {
-      U64_DEBUG ("Network initialization failed: %ld", result);
-      return result;
+      U64_DEBUG ("Socket library not initialized");
+      return U64_ERR_NETWORK;
     }
 
-  /* Disconnect any existing connection */
-  U64_NetDisconnect (conn);
-
-  /* Connect to server */
-  U64_DEBUG ("Connecting to %s:%d...", (char *)conn->host, conn->port);
-  result = U64_NetConnect (conn);
-  if (result != U64_OK)
+  /* Create socket first */
+  sockfd = socket (AF_INET, SOCK_STREAM, 0);
+  if (sockfd < 0)
     {
-      U64_DEBUG ("Failed to connect to server: %ld", result);
-      return result;
+      U64_DEBUG ("Failed to create socket: errno=%d", errno_storage);
+      return U64_ERR_NETWORK;
     }
+
+  U64_DEBUG ("Socket created: %d", sockfd);
+
+  /* Set socket options BEFORE connect - CRITICAL */
+  struct timeval timeout;
+  timeout.tv_sec = 30;
+  timeout.tv_usec = 0;
+
+  if (setsockopt (sockfd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof (timeout))
+      < 0)
+    {
+      U64_DEBUG ("Failed to set receive timeout");
+    }
+  if (setsockopt (sockfd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof (timeout))
+      < 0)
+    {
+      U64_DEBUG ("Failed to set send timeout");
+    }
+
+  /* Allocate buffers */
+  chunk_buffer = AllocMem (READ_CHUNK_SIZE, MEMF_PUBLIC);
+  response_buffer = AllocMem (buffer_size, MEMF_PUBLIC | MEMF_CLEAR);
+
+  if (!chunk_buffer || !response_buffer)
+    {
+      /* Try with smaller buffer if allocation failed */
+      if (!response_buffer && buffer_size > 1024)
+        {
+          if (response_buffer)
+            FreeMem (response_buffer, buffer_size);
+          buffer_size = 1024;
+          response_buffer = AllocMem (buffer_size, MEMF_PUBLIC | MEMF_CLEAR);
+        }
+
+      if (!chunk_buffer || !response_buffer)
+        {
+          U64_DEBUG ("Failed to allocate buffers");
+          result = U64_ERR_MEMORY;
+          goto cleanup;
+        }
+    }
+
+  U64_DEBUG ("Buffers allocated: chunk=%p (%d), response=%p (%lu)",
+             chunk_buffer, READ_CHUNK_SIZE, response_buffer,
+             (unsigned long)buffer_size);
+
+  /* DNS resolution with protection - PROVEN WORKING METHOD */
+  U64_DEBUG ("Starting DNS resolution for: %s", (char *)conn->host);
+
+  Forbid ();
+  if (conn && conn->host)
+    {
+      server = gethostbyname ((char *)conn->host);
+      if (server && server->h_addr)
+        {
+          dns_ok = TRUE;
+          U64_DEBUG ("DNS resolution successful");
+        }
+    }
+  Permit ();
+
+  if (!dns_ok || !server)
+    {
+      U64_DEBUG ("DNS lookup failed for: %s", (char *)conn->host);
+      result = U64_ERR_NETWORK;
+      goto cleanup;
+    }
+
+  /* Setup server address */
+  memset (&server_addr, 0, sizeof (server_addr));
+  server_addr.sin_family = AF_INET;
+  CopyMem (server->h_addr, &server_addr.sin_addr.s_addr, server->h_length);
+  server_addr.sin_port = htons (conn->port);
+
+  U64_DEBUG ("Connecting to server...");
+  if (connect (sockfd, (struct sockaddr *)&server_addr, sizeof (server_addr))
+      < 0)
+    {
+      U64_DEBUG ("Failed to connect: errno=%d", errno_storage);
+      result = U64_ERR_NETWORK;
+      goto cleanup;
+    }
+
   U64_DEBUG ("Connected successfully");
 
   /* Build HTTP request header */
-  header = U64_BuildHttpRequest (conn, req);
-  if (!header)
+  int header_len = snprintf (request_header, sizeof (request_header),
+                             "%s %s HTTP/1.1\r\n"
+                             "Host: %s:%d\r\n"
+                             "User-Agent: Ultimate64-Amiga/1.0\r\n"
+                             "Accept: */*\r\n"
+                             "Connection: close\r\n",
+                             http_methods[req->method],
+                             req->path ? (char *)req->path : "/",
+                             (char *)conn->host, conn->port);
+
+  /* Add Content-Type if provided */
+  if (req->content_type)
     {
-      U64_DEBUG ("Failed to build HTTP header");
-      U64_NetDisconnect (conn);
-      return U64_ERR_MEMORY;
+      header_len += snprintf (
+          request_header + header_len, sizeof (request_header) - header_len,
+          "Content-Type: %s\r\n", (char *)req->content_type);
     }
 
-  header_len = strlen ((char *)header);
-  U64_DEBUG ("Sending HTTP header (%lu bytes)...", (unsigned long)header_len);
+  /* Add Content-Length for POST/PUT */
+  if (req->method == HTTP_POST || req->method == HTTP_PUT)
+    {
+      header_len += snprintf (
+          request_header + header_len, sizeof (request_header) - header_len,
+          "Content-Length: %lu\r\n", (unsigned long)req->body_size);
+    }
+
+  /* Add password header if needed */
+  if (conn->password)
+    {
+      header_len += snprintf (request_header + header_len,
+                              sizeof (request_header) - header_len,
+                              "X-password: %s\r\n", (char *)conn->password);
+    }
+
+  /* End of headers */
+  strcat (request_header, "\r\n");
+  header_len += 2;
+
+  U64_DEBUG ("Sending HTTP header (%d bytes)...", header_len);
 
   /* Send header */
-  result = U64_NetSend (conn, (UBYTE *)header, header_len);
-  FreeMem (header, header_len + 1);
-
-  if (result != U64_OK)
+  if (send (sockfd, request_header, header_len, 0) < 0)
     {
-      U64_DEBUG ("Failed to send HTTP header: %ld", result);
-      U64_NetDisconnect (conn);
-      return result;
+      U64_DEBUG ("Failed to send HTTP header: errno=%d", errno_storage);
+      result = U64_ERR_NETWORK;
+      goto cleanup;
     }
+
   U64_DEBUG ("Header sent successfully");
 
   /* Send body if present */
@@ -185,177 +306,230 @@ U64_HttpRequest (U64Connection *conn, HttpRequest *req)
       U64_DEBUG ("Sending HTTP body (%lu bytes)...",
                  (unsigned long)req->body_size);
 
-      result = U64_NetSend (conn, req->body, req->body_size);
-      if (result != U64_OK)
+      if (send (sockfd, req->body, req->body_size, 0) < 0)
         {
-          U64_DEBUG ("Failed to send HTTP body: %ld", result);
-          U64_NetDisconnect (conn);
-          return result;
+          U64_DEBUG ("Failed to send HTTP body: errno=%d", errno_storage);
+          result = U64_ERR_NETWORK;
+          goto cleanup;
         }
       U64_DEBUG ("Body sent successfully");
     }
 
-  /* Read status line */
-  U64_DEBUG ("Reading HTTP status line...");
-  result = U64_NetReceiveLine (conn, (STRPTR)line, sizeof (line));
-  if (result < 0)
+  /* Receive response using PROVEN WORKING METHOD */
+  U64_DEBUG ("Receiving response...");
+
+  while (chunk_count < 200) /* Prevent infinite loops */
     {
-      U64_DEBUG ("Failed to read status line: %ld", result);
-      U64_NetDisconnect (conn);
-      return (result == U64_ERR_TIMEOUT) ? U64_ERR_TIMEOUT : U64_ERR_NETWORK;
+      struct timeval select_timeout;
+      ULONG read_mask;
+
+      select_timeout.tv_sec = 5;
+      select_timeout.tv_usec = 0;
+      read_mask = 1L << sockfd;
+
+      int ready = WaitSelect (sockfd + 1, &read_mask, NULL, NULL,
+                              &select_timeout, NULL);
+      if (ready < 0)
+        {
+          U64_DEBUG ("WaitSelect error");
+          break;
+        }
+      if (ready == 0)
+        {
+          U64_DEBUG ("Receive timeout (chunk %d)", chunk_count);
+          retry_count++;
+          if (retry_count >= MAX_RETRIES)
+            {
+              U64_DEBUG ("Max retries reached");
+              break;
+            }
+          continue;
+        }
+
+      if (read_mask & (1L << sockfd))
+        {
+          bytes_received = recv (sockfd, chunk_buffer, READ_CHUNK_SIZE - 1, 0);
+          if (bytes_received < 0)
+            {
+              U64_DEBUG ("Error receiving data: errno=%d", errno_storage);
+              break;
+            }
+          if (bytes_received == 0)
+            {
+              U64_DEBUG ("Connection closed by server");
+              break;
+            }
+
+          chunk_count++;
+          U64_DEBUG ("Received chunk %d: %d bytes", chunk_count,
+                     bytes_received);
+
+          /* Check if buffer needs to grow */
+          if (total_size + bytes_received + 1 > buffer_size)
+            {
+              size_t new_size = buffer_size * 2;
+              if (new_size > MAX_BUFFER_SIZE)
+                {
+                  U64_DEBUG ("Response too large, truncating at %lu bytes",
+                             (unsigned long)buffer_size);
+                  bytes_received = buffer_size - total_size - 1;
+                  if (bytes_received <= 0)
+                    break;
+                }
+              else
+                {
+                  U64_DEBUG ("Growing buffer from %lu to %lu bytes",
+                             (unsigned long)buffer_size,
+                             (unsigned long)new_size);
+
+                  new_buffer = AllocMem (new_size, MEMF_PUBLIC | MEMF_CLEAR);
+                  if (!new_buffer)
+                    {
+                      U64_DEBUG ("Failed to grow response buffer");
+                      break;
+                    }
+
+                  /* Copy existing data */
+                  if (total_size > 0)
+                    {
+                      CopyMem (response_buffer, new_buffer, total_size);
+                    }
+
+                  /* Free old buffer and use new one */
+                  FreeMem (response_buffer, buffer_size);
+                  response_buffer = new_buffer;
+                  buffer_size = new_size;
+                }
+            }
+
+          CopyMem (chunk_buffer, response_buffer + total_size, bytes_received);
+          total_size += bytes_received;
+          response_buffer[total_size] = '\0';
+
+          retry_count = 0; /* Reset retry count on successful receive */
+        }
     }
 
-  U64_DEBUG ("Status line: %s", line);
-
-  /* Parse status code */
-  if (strncmp (line, "HTTP/", 5) == 0)
+  if (total_size == 0)
     {
-      char *space = strchr (line, ' ');
-      if (space)
+      U64_DEBUG ("No data received");
+      result = U64_ERR_NETWORK;
+      goto cleanup;
+    }
+
+  U64_DEBUG ("Total received: %lu bytes", (unsigned long)total_size);
+
+  /* Parse HTTP status line */
+  char *status_line = response_buffer;
+  char *line_end = strstr (status_line, "\r\n");
+  if (line_end)
+    {
+      *line_end = '\0';
+      U64_DEBUG ("Status line: %s", status_line);
+
+      /* Parse status code */
+      if (strncmp (status_line, "HTTP/", 5) == 0)
         {
-          req->status_code = atoi (space + 1);
-          U64_DEBUG ("HTTP Status: %d", req->status_code);
+          char *space = strchr (status_line, ' ');
+          if (space)
+            {
+              req->status_code = atoi (space + 1);
+              U64_DEBUG ("HTTP Status: %d", req->status_code);
+            }
+        }
+      *line_end = '\r'; /* Restore for JSON parsing */
+    }
+
+  /* Find start of JSON content */
+  json_start = strstr (response_buffer, "\r\n\r\n");
+  if (json_start)
+    {
+      json_start += 4;
+      U64_DEBUG ("Found JSON content");
+    }
+  else
+    {
+      U64_DEBUG ("Could not find JSON content, using entire response");
+      json_start = response_buffer;
+    }
+
+  /* Create final response */
+  size_t json_len = strlen (json_start);
+  if (json_len > 0)
+    {
+      req->response = AllocMem (json_len + 1, MEMF_PUBLIC);
+      if (req->response)
+        {
+          strcpy (req->response, json_start);
+          req->response_size = json_len;
+          U64_DEBUG ("Response prepared: %lu bytes", (unsigned long)json_len);
         }
       else
         {
-          U64_DEBUG ("Invalid status line format");
-          U64_NetDisconnect (conn);
-          return U64_ERR_INVALID;
+          U64_DEBUG ("Failed to allocate final response buffer");
+          result = U64_ERR_MEMORY;
+          goto cleanup;
         }
+    }
+
+  /* Determine result based on status code */
+  if (req->status_code >= 200 && req->status_code < 300)
+    {
+      result = U64_OK;
     }
   else
     {
-      U64_DEBUG ("Invalid HTTP response");
-      U64_NetDisconnect (conn);
-      return U64_ERR_INVALID;
-    }
-
-  /* Read headers with minimal logging */
-  while (chunk_count < MAX_CHUNKS)
-    {
-      result = U64_NetReceiveLine (conn, (STRPTR)line, sizeof (line));
-      if (result < 0)
+      switch (req->status_code)
         {
-          U64_DEBUG ("Failed to read header line: %ld", result);
-          U64_NetDisconnect (conn);
-          return (result == U64_ERR_TIMEOUT) ? U64_ERR_TIMEOUT
-                                             : U64_ERR_NETWORK;
-        }
-
-      chunk_count++;
-
-      /* Empty line marks end of headers */
-      if (strlen (line) == 0)
-        {
-          U64_DEBUG ("Headers complete");
+        case 400:
+          result = U64_ERR_INVALID;
+          break;
+        case 403:
+          result = U64_ERR_ACCESS;
+          break;
+        case 404:
+          result = U64_ERR_NOTFOUND;
+          break;
+        case 500:
+        case 501:
+          result = U64_ERR_NOTIMPL;
+          break;
+        case 504:
+          result = U64_ERR_TIMEOUT;
+          break;
+        default:
+          result = U64_ERR_GENERAL;
           break;
         }
-
-      /* Look for Content-Length header */
-      if (strnicmp (line, "Content-Length:", 15) == 0)
-        {
-          content_length = atol (line + 15);
-          U64_DEBUG ("Content-Length: %lu", (unsigned long)content_length);
-        }
     }
 
-  /* Allocate response buffer */
-  ULONG buffer_size = 8192;
-  if (content_length > 0 && content_length < 32 * 1024)
+cleanup:
+  /* Close socket */
+  if (sockfd >= 0)
     {
-      buffer_size = content_length + 256;
+      U64_DEBUG ("Closing socket");
+      CloseSocket (sockfd);
     }
 
-  response_buffer = AllocMem (buffer_size, MEMF_PUBLIC | MEMF_CLEAR);
-  if (!response_buffer)
+  /* Free buffers */
+  if (response_buffer)
     {
-      U64_DEBUG ("Failed to allocate response buffer");
-      U64_NetDisconnect (conn);
-      return U64_ERR_MEMORY;
+      FreeMem (response_buffer, buffer_size);
     }
-
-  /* Read response body */
-  if (content_length > 0 && content_length < (buffer_size - 256))
+  if (chunk_buffer)
     {
-      result = U64_NetReceive (conn, response_buffer, content_length);
-      if (result < 0)
-        {
-          U64_DEBUG ("Failed to read response body: %ld", result);
-          FreeMem (response_buffer, buffer_size);
-          U64_NetDisconnect (conn);
-          return (result == U64_ERR_TIMEOUT) ? U64_ERR_TIMEOUT
-                                             : U64_ERR_NETWORK;
-        }
-      total_size = result;
-    }
-  else
-    {
-      /* Read until connection closes */
-      total_size = 0;
-      chunk_count = 0;
-
-      while (total_size < (buffer_size - 256) && chunk_count < 20)
-        {
-          ULONG chunk_size = (buffer_size - total_size - 256);
-          if (chunk_size > 1024)
-            chunk_size = 1024;
-
-          result = U64_NetReceive (conn, response_buffer + total_size,
-                                   chunk_size);
-          if (result <= 0)
-            {
-              break;
-            }
-          total_size += result;
-          chunk_count++;
-
-          if (chunk_count % 5 == 0)
-            {
-              Delay (1);
-            }
-        }
+      FreeMem (chunk_buffer, READ_CHUNK_SIZE);
     }
 
-  /* Null terminate response */
-  if (response_buffer && total_size < (buffer_size - 10))
-    {
-      response_buffer[total_size] = '\0';
-    }
+  U64_DEBUG ("=== HTTP Request Complete: result=%ld, status=%d ===", result,
+             req->status_code);
 
-  /* Store response */
-  req->response = (STRPTR)response_buffer;
-  req->response_size = total_size;
+  return result;
 
-  U64_DEBUG ("HTTP request complete: %lu bytes, status %d",
-             (unsigned long)total_size, req->status_code);
-
-  /* Disconnect */
-  U64_NetDisconnect (conn);
-
-  /* Return based on status code */
-  switch (req->status_code)
-    {
-    case 200:
-    case 204:
-      return U64_OK;
-    case 400:
-      return U64_ERR_INVALID;
-    case 403:
-      return U64_ERR_ACCESS;
-    case 404:
-      return U64_ERR_NOTFOUND;
-    case 500:
-    case 501:
-      return U64_ERR_NOTIMPL;
-    case 504:
-      return U64_ERR_TIMEOUT;
-    default:
-      if (req->status_code >= 200 && req->status_code < 300)
-        {
-          return U64_OK;
-        }
-      return U64_ERR_GENERAL;
-    }
+#else /* !USE_BSDSOCKET */
+  U64_DEBUG ("Network not supported (USE_BSDSOCKET not defined)");
+  return U64_ERR_NOTIMPL;
+#endif
 }
 
 /* Also add this debug function to verify the request before sending */

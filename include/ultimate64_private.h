@@ -30,6 +30,11 @@ struct U64Connection
 #endif
 };
 
+#ifdef USE_BSDSOCKET
+extern struct Library *SocketBase;
+extern int errno_storage;
+#endif
+
 /* HTTP methods */
 #define HTTP_GET 0
 #define HTTP_POST 1

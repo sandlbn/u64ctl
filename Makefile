@@ -30,9 +30,9 @@ STRIP = m68k-amigaos-strip
 
 # Output names
 CLI_PROGRAM = u64ctl
-MUI_PROGRAM = Ultimate64MUI
+MUI_PROGRAM = u64ctlMUI
 LIBRARY_NAME = libultimate64.a
-VERSION = 1.0.0
+VERSION = 0.2.0
 
 # Library source files
 LIB_SOURCES = \

@@ -16,8 +16,8 @@
 #endif
 
 /* Library version */
-#define ULTIMATE64_VERSION_MAJOR 1
-#define ULTIMATE64_VERSION_MINOR 0
+#define ULTIMATE64_VERSION_MAJOR 0
+#define ULTIMATE64_VERSION_MINOR 2
 #define ULTIMATE64_VERSION_PATCH 0
 
 /* Error codes */

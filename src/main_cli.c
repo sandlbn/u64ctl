@@ -18,12 +18,12 @@
 #include "ultimate64_amiga.h"
 
 /* Version string */
-static const char version[] = "$VER: u64ctl 1.0 (2024)";
+static const char version[] = "$VER: u64ctl 0.2.0 (2025)";
 
 /* Template for ReadArgs */
 #define TEMPLATE                                                              \
   "HOST/K,COMMAND/A,FILE/K,ADDRESS/K,TEXT/K,DRIVE/K,MODE/K,"                  \
-  "PASSWORD/K,SONG/K/N,SLOW/S,VERBOSE/S,QUIET/S"
+  "PASSWORD/K,SONG/K/N,VERBOSE/S,QUIET/S"
 
 #define ENV_ULTIMATE64_HOST "Ultimate64/Host"
 #define ENV_ULTIMATE64_PASSWORD "Ultimate64/Password"
