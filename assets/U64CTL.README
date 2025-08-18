@@ -1,0 +1,77 @@
+Short:        Ultimate64/Ultimate-II control library and tools
+Author:       marcin@spoczynski.com (Marcin Spoczynski)
+Uploader:     marcin@spoczynski.com (Marcin Spoczynski)
+Type:         comm/misc
+Version:      1.0
+Architecture: m68k-amigaos >= 3.0
+Requires:     MUI 3.8+, bsdsocket.library
+Distribution: Aminet
+
+Description:
+Ultimate64 Control Library provides comprehensive control over Ultimate64 and 
+Ultimate-II devices from AmigaOS. It includes both a command-line interface 
+and a user-friendly MUI application for managing your C64 system remotely.
+
+The package includes a static library for developers, a CLI 
+tool for scripting and automation, and MUI interface for 
+interactive use. Control your C64 remotely through network connection with 
+access to disk operations, program loading, memory access, and machine 
+control functions.
+
+Main features:
+- MUI graphical interface with tabbed organization
+- Complete CLI tool (u64ctl) for scripting and automation
+- Load and run PRG files and CRT cartridges
+- Mount/unmount disk images (D64, G64, D71, G71, D81)
+- Direct C64 memory peek/poke operations
+- Machine control (reset, reboot, pause/resume, power off)
+- Keyboard input with automatic PETSCII conversion
+- SID and MOD music file playback
+- Real-time drive status monitoring
+- Persistent configuration management
+- Static library for embedding in custom applications
+- Native AmigaOS integration with ENV: variable storage
+
+File format support:
+- Disk images: D64, G64, D71, G71, D81
+- Programs: PRG, CRT cartridge files
+- Music: SID (PSID/RSID), MOD files
+
+CLI Examples:
+- u64ctl info                           # Device information
+- u64ctl reset                          # Reset C64
+- u64ctl mount FILE disk.d64 DRIVE a    # Mount disk image
+- u64ctl load FILE game.prg             # Load PRG file
+- u64ctl type TEXT "load\"*\",8,1"     # Type commands
+- u64ctl peek ADDRESS 0xd020            # Read memory
+- u64ctl playsid FILE music.sid         # Play SID file
+
+Requirements:
+- AmigaOS 3.0+
+- MUI 3.8+ (for GUI version)
+- bsdsocket.library
+- TCP/IP stack (AmiTCP, Miami, Roadshow, etc.)
+- Ultimate64 or Ultimate-II device with network connectivity
+- At least 2MB RAM (4MB recommended for MUI)
+
+Package contents:
+- u64ctlMUI - MUI graphical interface
+- u64ctl - Command-line interface tool
+- libultimate64.a - Static library for developers
+
+
+Credits:
+- Developed by Marcin Spoczynski @sandlbn
+- Tested with Ultimate64 firmware 3.12a
+- Built with m68k-amigaos-gcc cross-compiler
+
+Source code: https://github.com/sandlbn/u64ctl
+
+Ultimate64 Control Library 1.0 (2025)
+- Initial release with CLI and MUI interfaces
+- Full Ultimate64/Ultimate-II device support
+- Comprehensive file format support (PRG, CRT, D64, G64, D71, G71, D81, SID, MOD)
+- Robust network communication with retry logic
+- Persistent configuration management through ENV: variables
+- Native Amiga integration with MUI interface
+- Complete developer API with static library
