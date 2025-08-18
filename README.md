@@ -13,18 +13,24 @@ Special thanks to Gideon for creating these incredible devices that bring modern
 ## Features
 
 - **File Format Validation**: Built-in validation for PRG, CRT, SID, MOD, and disk image formats
-- **Multiple Interfaces**: Both C library and command-line tool
+- **Multiple Interfaces**: Both C library, command-line tool and GUI app
 - **Disk Management**: Mount/unmount disk images with full error reporting
 - **Audio Playback**: Play SID and MOD files directly
 - **Program Execution**: Load and run PRG and CRT files
 - **Keyboard Emulation**: Type text directly into the C64
 - **Configuration Management**: Persistent settings via ENV: variables
 
+## Screenshots
+
+![Ultimate64 Control MUI Interface](screenshots/screenshot.png "Main MUI interface showing connection status and tabbed layout")
+
+
 ## Requirements
 
 - Amiga OS 3.x (tested on 3.1+)
 - bsdsocket.library for network functionality
 - Ultimate64 or Ultimate-II device with network connectivity
+- MUI 3.8 library
 - Cross-compilation toolchain (m68k-amigaos-gcc)
 
 ## Building
