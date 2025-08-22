@@ -768,7 +768,7 @@ U64_PlaySID (U64Connection *conn, CONST UBYTE *data, ULONG size,
   /* Build path */
   if (song_num > 0)
     {
-      sprintf (path, "/v1/runners:sidplay?songnr=%d", song_num);
+      snprintf(path, sizeof(path), "/v1/runners:sidplay?songnr=%ld", (long)song_num);
     }
   else
     {
