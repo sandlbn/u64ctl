@@ -287,7 +287,7 @@ U64_GetErrorString (LONG error)
   LONG index = -error;
 
 #ifdef DEBUG_BUILD
-  kprintf ("[U64] GetErrorString: error=%ld, index=%ld\n", error, index);
+  printf ("[U64] GetErrorString: error=%ld, index=%ld\n", error, index);
 #endif
 
   if (index < 0

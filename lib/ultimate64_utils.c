@@ -27,7 +27,7 @@ U64_DebugPrintf (CONST_STRPTR format, ...)
   va_end (args);
 
   /* Output to serial port if available */
-  kprintf ("[U64] %s\n", buffer);
+  printf ("[U64] %s\n", buffer);
 
   /* Also output to console */
   printf ("[U64 DEBUG] %s\n", buffer);
