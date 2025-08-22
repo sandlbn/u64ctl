@@ -234,7 +234,7 @@ typedef struct
 
 static char global_subsong_str[64] = "";
 
-/* Forward declarations to fix compilation errors */
+/* Forward declarations */
 static void UpdateStatus (struct SIDPlayerData *data, CONST_STRPTR text);
 static void UpdatePlaylistDisplay (struct SIDPlayerData *data);
 static void UpdateCurrentSongDisplay (struct SIDPlayerData *data);
@@ -243,6 +243,7 @@ static void FreeSongLengthDB (struct SIDPlayerData *data);
 static void ClearSidDirectoryPref (struct SIDPlayerData *data);
 static ULONG FindSongLength (struct SIDPlayerData *data,
                              const UBYTE md5[MD5_HASH_SIZE], UWORD subsong);
+static void OpenConfigWindow (struct SIDPlayerData *data);
 /* MD5 function prototypes */
 static void MD5Init (MD5_CTX *ctx);
 static void MD5Update (MD5_CTX *ctx, const UBYTE *input, ULONG inputLen);
@@ -1095,6 +1096,91 @@ UpdateStatus (struct SIDPlayerData *data, CONST_STRPTR text)
   set (data->txt_status, MUIA_Text_Contents, text);
 }
 
+/* Check if configuration is complete */
+static BOOL
+IsConfigurationComplete (struct SIDPlayerData *data)
+{
+  /* Configuration is complete if we have a host address */
+  return (strlen (data->host) > 0);
+}
+
+/* Modified DoConnect to check for configuration */
+static void
+DoConnect (struct SIDPlayerData *data)
+{
+  if (data->connection)
+    {
+      /* Disconnect */
+      if (data->state == PLAYER_PLAYING)
+        {
+          data->state = PLAYER_STOPPED;
+        }
+
+      U64_Disconnect (data->connection);
+      data->connection = NULL;
+
+      set (data->txt_connection_status, MUIA_Text_Contents, "Disconnected");
+      set (data->btn_connect, MUIA_Text_Contents, "Connect");
+      UpdateStatus (data, "Disconnected");
+
+      /* Disable controls */
+      set (data->btn_play, MUIA_Disabled, TRUE);
+      set (data->btn_stop, MUIA_Disabled, TRUE);
+      set (data->btn_next, MUIA_Disabled, TRUE);
+      set (data->btn_prev, MUIA_Disabled, TRUE);
+    }
+  else
+    {
+      /* Check if configuration is complete before connecting */
+      if (!IsConfigurationComplete (data))
+        {
+          UpdateStatus (data, "Please configure connection settings first");
+          OpenConfigWindow (data);
+          return;
+        }
+
+      /* Connect */
+      data->connection = U64_Connect (
+          (CONST_STRPTR)data->host,
+          strlen (data->password) > 0 ? (CONST_STRPTR)data->password : NULL);
+
+      if (data->connection)
+        {
+          U64DeviceInfo info;
+          char status[256];
+
+          sprintf (status, "Connected to %s", data->host);
+          set (data->txt_connection_status, MUIA_Text_Contents, "Connected");
+          set (data->btn_connect, MUIA_Text_Contents, "Disconnect");
+          UpdateStatus (data, status);
+
+          /* Try to get device info */
+          if (U64_GetDeviceInfo (data->connection, &info) == U64_OK)
+            {
+              sprintf (status, "Device: %s (firmware %s)",
+                       info.product_name ? (char *)info.product_name
+                                         : "Ultimate",
+                       info.firmware_version ? (char *)info.firmware_version
+                                             : "unknown");
+              UpdateStatus (data, status);
+              U64_FreeDeviceInfo (&info);
+            }
+
+          /* Enable controls */
+          set (data->btn_play, MUIA_Disabled, FALSE);
+          set (data->btn_stop, MUIA_Disabled, FALSE);
+          set (data->btn_next, MUIA_Disabled, FALSE);
+          set (data->btn_prev, MUIA_Disabled, FALSE);
+        }
+      else
+        {
+          set (data->txt_connection_status, MUIA_Text_Contents,
+               "Disconnected");
+          UpdateStatus (data, "Connection failed");
+        }
+    }
+}
+
 /* Load configuration from environment */
 static void
 LoadConfig (struct SIDPlayerData *data)
@@ -1109,7 +1195,8 @@ LoadConfig (struct SIDPlayerData *data)
     }
   else
     {
-      strcpy (data->host, "192.168.1.64");
+      /* No default IP address - leave empty */
+      data->host[0] = '\0';
     }
 
   env_password = ReadEnvVar (ENV_ULTIMATE64_PASSWORD);
@@ -1126,7 +1213,6 @@ LoadConfig (struct SIDPlayerData *data)
   /* Load SID directory preference */
   LoadSidDirectoryPref (data);
 }
-
 /* Save configuration to environment */
 static void
 SaveConfig (struct SIDPlayerData *data)
@@ -2523,7 +2609,7 @@ ClearConfig (struct SIDPlayerData *data)
   ClearSidDirectoryPref (data);
 
   /* Reset to defaults */
-  strcpy (data->host, "192.168.1.64");
+  data->host[0] = '\0';
   data->password[0] = '\0';
 
   UpdateStatus (data, "All configuration cleared");
@@ -2595,82 +2681,6 @@ ShowAboutDialog (struct SIDPlayerData *data)
       set (about_window, MUIA_Window_Open, FALSE);
       DoMethod (data->app, OM_REMMEMBER, about_window);
       MUI_DisposeObject (about_window);
-    }
-}
-
-/* Connect to Ultimate64 */
-static void
-DoConnect (struct SIDPlayerData *data)
-{
-  if (data->connection)
-    {
-      /* Disconnect */
-      if (data->state == PLAYER_PLAYING)
-        {
-          data->state = PLAYER_STOPPED;
-        }
-
-      U64_Disconnect (data->connection);
-      data->connection = NULL;
-
-      set (data->txt_connection_status, MUIA_Text_Contents, "Disconnected");
-      set (data->btn_connect, MUIA_Text_Contents, "Connect");
-      UpdateStatus (data, "Disconnected");
-
-      /* Disable controls */
-      set (data->btn_play, MUIA_Disabled, TRUE);
-      set (data->btn_stop, MUIA_Disabled, TRUE);
-      set (data->btn_next, MUIA_Disabled, TRUE);
-      set (data->btn_prev, MUIA_Disabled, TRUE);
-    }
-  else
-    {
-      /* Connect */
-      if (strlen (data->host) == 0)
-        {
-          UpdateStatus (data,
-                        "Please configure host address in Settings menu");
-          return;
-        }
-
-      data->connection = U64_Connect (
-          (CONST_STRPTR)data->host,
-          strlen (data->password) > 0 ? (CONST_STRPTR)data->password : NULL);
-
-      if (data->connection)
-        {
-          U64DeviceInfo info;
-          char status[256];
-
-          sprintf (status, "Connected to %s", data->host);
-          set (data->txt_connection_status, MUIA_Text_Contents, "Connected");
-          set (data->btn_connect, MUIA_Text_Contents, "Disconnect");
-          UpdateStatus (data, status);
-
-          /* Try to get device info */
-          if (U64_GetDeviceInfo (data->connection, &info) == U64_OK)
-            {
-              sprintf (status, "Device: %s (firmware %s)",
-                       info.product_name ? (char *)info.product_name
-                                         : "Ultimate",
-                       info.firmware_version ? (char *)info.firmware_version
-                                             : "unknown");
-              UpdateStatus (data, status);
-              U64_FreeDeviceInfo (&info);
-            }
-
-          /* Enable controls */
-          set (data->btn_play, MUIA_Disabled, FALSE);
-          set (data->btn_stop, MUIA_Disabled, FALSE);
-          set (data->btn_next, MUIA_Disabled, FALSE);
-          set (data->btn_prev, MUIA_Disabled, FALSE);
-        }
-      else
-        {
-          set (data->txt_connection_status, MUIA_Text_Contents,
-               "Disconnected");
-          UpdateStatus (data, "Connection failed");
-        }
     }
 }
 
@@ -3262,6 +3272,8 @@ main (int argc, char *argv[])
   /* Load configuration */
   LoadConfig (&data);
 
+  BOOL need_config = !IsConfigurationComplete (&data);
+
   /* Create MUI application */
   data.app = ApplicationObject, MUIA_Application_Title,
   "Ultimate64 SID Player", MUIA_Application_Version, version,
@@ -3383,6 +3395,14 @@ main (int argc, char *argv[])
 
   /* Open window */
   set (data.window, MUIA_Window_Open, TRUE);
+
+  /* Auto-open configuration window if needed */
+  if (need_config)
+    {
+      UpdateStatus (&data,
+                    "Please configure your Ultimate64 connection settings");
+      OpenConfigWindow (&data);
+    }
   // Auto-load songlengths database if available
   AutoLoadSongLengths (&data);
 
