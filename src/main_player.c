@@ -2692,7 +2692,8 @@ static BOOL APP_ClearPlaylist(void)
     return TRUE;
 }
 
-static BOOL APP_Play(void)
+static BOOL
+APP_Play(void)
 {
     LONG selected_index;
 
@@ -2707,47 +2708,51 @@ static BOOL APP_Play(void)
     /* Get currently selected item in playlist */
     get(objApp->LSV_PlaylistList, MUIA_List_Active, &selected_index);
 
-    /* If a song is selected in the playlist, use that */
-    if (selected_index != MUIV_List_Active_Off && selected_index >= 0
-        && selected_index < (LONG)objApp->playlist_count) {
+    U64_DEBUG("=== APP_Play (PLAY BUTTON) START ===");
+    U64_DEBUG("Current entry: %p (index %lu)", objApp->current_entry,
+              (unsigned long)objApp->current_index);
+    U64_DEBUG("Selected index: %ld", selected_index);
 
-        /* Find the selected entry */
-        PlaylistEntry *entry = objApp->playlist_head;
-        for (ULONG i = 0; i < (ULONG)selected_index && entry; i++) {
-            entry = entry->next;
-        }
-
-        if (entry) {
-            objApp->current_entry = entry;
-            objApp->current_index = (ULONG)selected_index;
-            APP_UpdateCurrentSongCache();
-            
-            if (PlayCurrentSong(objApp)) {
-                APP_UpdatePlaylistDisplay();
-                return TRUE;
-            }
-        }
-    }
-    /* If no song is selected but we have a current entry, play it */
-    else if (objApp->current_entry) {
+    /* If there's a current entry (from previous selection), play it */
+    if (objApp->current_entry) {
+        U64_DEBUG("Playing current entry: %s", FilePart(objApp->current_entry->filename));
+        
+        /* Make sure the visual selection matches current entry */
+        set(objApp->LSV_PlaylistList, MUIA_List_Active, objApp->current_index);
+        
+        /* Update cache and play current song */
         APP_UpdateCurrentSongCache();
-        return PlayCurrentSong(objApp);
+        if (PlayCurrentSong(objApp)) {
+            APP_UpdatePlaylistDisplay();
+            U64_DEBUG("Successfully started playing current song");
+            return TRUE;
+        } else {
+            U64_DEBUG("Failed to start playing current song");
+            return FALSE;
+        }
     }
     /* If no current entry, default to first song */
     else if (objApp->playlist_head) {
+        U64_DEBUG("No current entry, defaulting to first song");
+
         objApp->current_entry = objApp->playlist_head;
         objApp->current_index = 0;
+
+        /* Select first song in playlist visually */
         set(objApp->LSV_PlaylistList, MUIA_List_Active, 0);
+
+        /* Update cache and play */
         APP_UpdateCurrentSongCache();
-        
         if (PlayCurrentSong(objApp)) {
             APP_UpdatePlaylistDisplay();
             return TRUE;
+        } else {
+            return FALSE;
         }
+    } else {
+        APP_UpdateStatus("No songs in playlist");
+        return FALSE;
     }
-
-    APP_UpdateStatus("Failed to start playback");
-    return FALSE;
 }
 
 static BOOL APP_Stop(void)
@@ -3086,7 +3091,53 @@ static BOOL APP_ConfigCancel(void)
     return TRUE;
 }
 
-static BOOL APP_PlaylistActive(void)
+static BOOL
+APP_PlaylistDoubleClick(void)
+{
+    LONG active;
+
+    get(objApp->LSV_PlaylistList, MUIA_List_Active, &active);
+
+    U64_DEBUG("=== APP_PlaylistDoubleClick (DOUBLE CLICK) ===");
+    U64_DEBUG("Double-clicked index: %ld", active);
+
+    if (active == MUIV_List_Active_Off || active < 0) {
+        U64_DEBUG("No valid selection for double-click");
+        return FALSE;
+    }
+
+    /* Find the entry */
+    PlaylistEntry *entry = objApp->playlist_head;
+    for (ULONG i = 0; i < (ULONG)active && entry; i++) {
+        entry = entry->next;
+    }
+
+    if (entry) {
+        U64_DEBUG("Double-clicked on: %s", FilePart(entry->filename));
+
+        objApp->current_entry = entry;
+        objApp->current_index = (ULONG)active;
+
+        /* Update cache immediately */
+        APP_UpdateCurrentSongCache();
+
+        /* ALWAYS start playing on double-click, regardless of current state */
+        U64_DEBUG("Starting playback due to double-click");
+        if (PlayCurrentSong(objApp)) {
+            /* Update playlist display to show current selection */
+            APP_UpdatePlaylistDisplay();
+            U64_DEBUG("Successfully started playing double-clicked song");
+        } else {
+            U64_DEBUG("Failed to start playing double-clicked song");
+        }
+    } else {
+        U64_DEBUG("ERROR: Could not find double-clicked entry");
+    }
+
+    return TRUE;
+}
+static BOOL
+APP_PlaylistActive(void)
 {
     LONG index;
     
@@ -3094,7 +3145,11 @@ static BOOL APP_PlaylistActive(void)
     
     get(objApp->LSV_PlaylistList, MUIA_List_Active, &index);
     
+    U64_DEBUG("=== APP_PlaylistActive (SINGLE CLICK) ===");
+    U64_DEBUG("Selected index: %ld", index);
+    
     if (index == MUIV_List_Active_Off || index < 0) {
+        U64_DEBUG("No valid selection");
         return FALSE;
     }
 
@@ -3105,19 +3160,64 @@ static BOOL APP_PlaylistActive(void)
     }
 
     if (entry) {
+        U64_DEBUG("Single-clicked on: %s", FilePart(entry->filename));
+        
+        /* ONLY update current entry - do NOT start playing */
         objApp->current_entry = entry;
         objApp->current_index = (ULONG)index;
+        
+        /* Update cache and display */
         APP_UpdateCurrentSongCache();
         APP_UpdateCurrentSongDisplay();
+        
+        /* Build status message manually - show selection, not playing */
+        static char status_msg[256];
+        strcpy(status_msg, "Selected: ");
+        
+        char *basename = FilePart(entry->filename);
+        strcat(status_msg, basename);
+        
+        if (entry->subsongs > 1) {
+            strcat(status_msg, " [");
+            
+            /* Add current subsong (1-based) */
+            int display_current = (int)entry->current_subsong + 1;
+            if (display_current < 10) {
+                char c = '0' + display_current;
+                strncat(status_msg, &c, 1);
+            } else if (display_current < 100) {
+                char temp[3];
+                temp[0] = '0' + (display_current / 10);
+                temp[1] = '0' + (display_current % 10);
+                temp[2] = '\0';
+                strcat(status_msg, temp);
+            }
+            
+            strcat(status_msg, "/");
+            
+            /* Add total subsongs */
+            int display_total = (int)entry->subsongs;
+            if (display_total < 10) {
+                char c = '0' + display_total;
+                strncat(status_msg, &c, 1);
+            } else if (display_total < 100) {
+                char temp[3];
+                temp[0] = '0' + (display_total / 10);
+                temp[1] = '0' + (display_total % 10);
+                temp[2] = '\0';
+                strcat(status_msg, temp);
+            }
+            
+            strcat(status_msg, "]");
+        }
+        
+        APP_UpdateStatus(status_msg);
+        U64_DEBUG("Updated selection without playing");
+    } else {
+        U64_DEBUG("ERROR: Could not find selected entry");
     }
 
     return TRUE;
-}
-
-static BOOL APP_PlaylistDoubleClick(void)
-{
-    /* Double-click starts playing the selected song */
-    return APP_Play();
 }
 
 static void APP_TimerUpdate(void)
