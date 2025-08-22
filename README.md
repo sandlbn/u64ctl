@@ -1,6 +1,6 @@
 # Ultimate64 Control Library for Amiga OS 3.x
 
-A comprehensive C library for controlling Ultimate64 and Ultimate-II devices from Amiga computers running AmigaOS 3.x. This library provides both programmatic access and command-line tools for remote control of your Ultimate64/Ultimate-II hardware.
+A C library for controlling Ultimate64 and Ultimate-II devices from Amiga computers running AmigaOS 3.x. This library provides both programmatic access and multiple applications for remote control of your Ultimate64/Ultimate-II hardware.
 
 ## Inspiration and Credits
 
@@ -8,29 +8,33 @@ This project is inspired by and compatible with:
 - The excellent [ultimate64 Rust crate](https://docs.rs/ultimate64/latest/ultimate64/index.html) which provides similar functionality for modern systems
 - The amazing [Ultimate64 and Ultimate-II hardware](https://1541u-documentation.readthedocs.io/en/latest/api/api_calls.html) by Gideon's Logic Architectures
 
-Special thanks to Gideon for creating these incredible devices that bring modern convenience to retro computing!
+Special thanks to Gideon for creating these incredible device!
 
-## Features
+## What's Included
 
-- **File Format Validation**: Built-in validation for PRG, CRT, SID, MOD, and disk image formats
-- **Multiple Interfaces**: Both C library, command-line tool and GUI app
-- **Disk Management**: Mount/unmount disk images with full error reporting
-- **Audio Playback**: Play SID and MOD files directly
-- **Program Execution**: Load and run PRG and CRT files
-- **Keyboard Emulation**: Type text directly into the C64
-- **Configuration Management**: Persistent settings via ENV: variables
+**Applications:**
+- **u64ctl** - Command-line tool for all Ultimate64 operations
+- **u64ctlMUI** - MUI-based GUI control application  
+- **u64sidplayer** - SID music player with playlist support
+
+**Library Features:**
+- File format validation for PRG, CRT, SID, MOD, and disk images
+- Disk management with mount/unmount operations
+- Audio playback for SID and MOD files
+- Program execution for PRG and CRT files
+- Keyboard emulation for typing text into the C64
+- Configuration management via ENV: variables
 
 ## Screenshots
 
 ![Ultimate64 Control MUI Interface](screenshots/screenshot.png "Main MUI interface showing connection status and tabbed layout")
-
 
 ## Requirements
 
 - Amiga OS 3.x (tested on 3.1+)
 - bsdsocket.library for network functionality
 - Ultimate64 or Ultimate-II device with network connectivity
-- MUI 3.8 library
+- MUI 3.8 library (for GUI applications)
 - Cross-compilation toolchain (m68k-amigaos-gcc)
 
 ## Building
@@ -56,9 +60,11 @@ make clean all
 # Build specific targets
 make library          # Build static library only
 make cli             # Build command-line tool only
+make mui             # Build MUI control application
+make sidplayer       # Build SID player with playlist
 make complete        # Build everything
 
-# Debug build
+# Debug build (enables DPRINTF output)
 make DEBUG=1 all
 ```
 
@@ -67,11 +73,13 @@ make DEBUG=1 all
 - `DEBUG=1` - Build with debug symbols and verbose output
 - `USE_BSDSOCKET=1` - Enable network support (default)
 
-## Command Line Usage
+## Applications
 
-The `u64ctl` command provides comprehensive control over your Ultimate64/Ultimate-II device.
+### u64ctl - Command Line Tool
 
-### Initial Setup
+The `u64ctl` command provides full control over your Ultimate64/Ultimate-II device.
+
+#### Initial Setup
 
 ```bash
 # Set your Ultimate64's IP address
@@ -87,7 +95,7 @@ u64ctl setport TEXT 8080
 u64ctl config
 ```
 
-### Device Information
+#### Device Information
 
 ```bash
 # Get device information
@@ -97,7 +105,7 @@ u64ctl info
 u64ctl 192.168.1.64 info    # Override host for one command
 ```
 
-### Machine Control
+#### Machine Control
 
 ```bash
 # Reset the C64
@@ -117,7 +125,7 @@ u64ctl resume
 u64ctl menu
 ```
 
-### File Operations
+#### File Operations
 
 ```bash
 # Load a PRG file
@@ -133,7 +141,7 @@ u64ctl run FILE carts/simons.crt
 u64ctl load FILE "work/my game.prg"
 ```
 
-### Memory Operations
+#### Memory Operations
 
 ```bash
 # Read memory (peek)
@@ -147,7 +155,7 @@ u64ctl poke ADDRESS 53280 TEXT 0      # Set border to black
 u64ctl poke ADDRESS $d021 TEXT 6      # Set background to blue
 ```
 
-### Disk Operations
+#### Disk Operations
 
 ```bash
 # Mount disk images
@@ -164,7 +172,7 @@ u64ctl unmount DRIVE b
 u64ctl drives
 ```
 
-### Text Input
+#### Text Input
 
 ```bash
 # Type simple text
@@ -181,7 +189,7 @@ u64ctl type TEXT "20 goto 10\n"
 u64ctl type TEXT "run\n"
 ```
 
-### Audio Playback
+#### Audio Playback
 
 ```bash
 # Play SID files
@@ -194,7 +202,7 @@ u64ctl playmod FILE music.mod
 u64ctl playmod FILE "ambient/track1.mod" VERBOSE
 ```
 
-### Verbose and Quiet Modes
+#### Verbose and Quiet Modes
 
 ```bash
 # Enable verbose output for debugging
@@ -206,6 +214,40 @@ u64ctl reset QUIET
 # Combine with other options
 u64ctl load FILE test.prg VERBOSE
 ```
+
+### u64sidplayer - SID Music Player
+
+SID music player with playlist support, subsong navigation, and song length database integration.
+
+#### Features
+
+- **Playlist Management**: Add multiple SID files, reorder, and manage your music collection
+- **Subsong Support**: Navigate through multiple subsongs within SID files
+- **Song Length Database**: Auto-load Songlengths.md5 for accurate timing
+- **Playback Modes**: Shuffle and repeat modes for continuous listening
+- **Visual Interface**: MUI-based interface with progress tracking
+- **Auto-Discovery**: Automatically detects and loads song length databases
+
+#### Usage
+
+1. **Setup Database**: Copy Songlengths.md5 to the same directory as the program for auto-loading (optional but recommended)
+2. **Configure**: Go to Settings menu to configure your Ultimate64's IP address and password
+3. **Connect**: Press the Connect button to establish connection to your Ultimate64
+4. **Add Music**: Use "Add Files" to browse and add SID files to your playlist
+5. **Play**: Double-click songs or use playback controls
+6. **Navigate**: Use << and >> buttons to navigate subsongs and tracks
+
+#### Song Length Database
+
+The player supports HVSC-style songlengths.md5 files:
+- Place `Songlengths.md5` in the same directory as the program for auto-loading
+- Provides accurate timing for thousands of SID files
+- Shows subsong counts and individual track durations
+- Automatically advances to next subsong when current track ends
+
+### u64ctlMUI - GUI Control Tool
+
+MUI-based graphical interface providing all Ultimate64 control functions through tabbed interface.
 
 ## Library Usage
 
@@ -369,7 +411,7 @@ if (petscii) {
 
 ## Error Handling
 
-The library provides comprehensive error reporting:
+The library provides detailed error reporting:
 
 ```c
 // Check for errors
@@ -429,6 +471,11 @@ Ensure your Ultimate64/Ultimate-II device allows HTTP connections on the configu
    - Validate file format before loading
    - Check file size and format
 
+3. **SID Player Issues**
+   - Ensure SID files are valid PSID/RSID format
+   - Check that Songlengths.md5 is in the correct format
+   - Verify MUI 3.8+ is installed for the GUI
+
 ### Debug Mode
 
 Enable verbose output for detailed debugging:
@@ -439,6 +486,9 @@ u64ctl info VERBOSE
 
 # In code
 U64_SetVerboseMode(TRUE);
+
+# Build with debug output
+make DEBUG=1 sidplayer
 ```
 
 ### Network Testing
@@ -467,6 +517,7 @@ Contributions are welcome! Please:
 - **Rust ultimate64 crate authors** - Inspiration for API design
 - **Amiga community** - Testing and feedback
 - **bebbo** - Amiga GCC cross-compiler toolchain
+- **HVSC Team** - High Voltage SID Collection and song length databases
 
 ## Links
 
@@ -474,3 +525,4 @@ Contributions are welcome! Please:
 - [Ultimate-II Documentation](https://1541u-documentation.readthedocs.io/)
 - [Rust ultimate64 crate](https://docs.rs/ultimate64/latest/ultimate64/)
 - [Amiga GCC Toolchain](https://github.com/bebbo/amiga-gcc)
+- [High Voltage SID Collection](https://www.hvsc.c64.org/)

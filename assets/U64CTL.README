@@ -6,21 +6,23 @@ Version:      0.2.0
 Architecture: m68k-amigaos >= 3.0
 Requires:     MUI 3.8+, bsdsocket.library
 Distribution: Aminet
-
 Description:
-Ultimate64 Control Library provides comprehensive control over Ultimate64 and 
-Ultimate-II devices from AmigaOS. It includes both a command-line interface 
-and a user-friendly MUI application for managing your C64 system remotely.
+Ultimate64 Control Library provides complete control over Ultimate64 and 
+Ultimate-II devices from AmigaOS. It includes three applications: a command-line 
+tool, a MUI control interface, and an advanced SID music player with playlist 
+support for managing your C64 system remotely.
 
-The package includes a static library for developers, a CLI 
-tool for scripting and automation, and MUI interface for 
-interactive use. Control your C64 remotely through network connection with 
-access to disk operations, program loading, memory access, and machine 
-control functions.
+The package includes a static library for developers, CLI tool for scripting, 
+MUI control interface for interactive use, and a dedicated SID player with 
+playlist management. Control your C64 remotely through network connection with 
+access to disk operations, program loading, memory access, and machine control.
+
+Applications included:
+- u64ctlMUI - MUI graphical control interface with tabbed organization
+- u64ctl - Complete CLI tool for scripting and automation
+- u64sidplayer - SID music player with playlist and subsong support
 
 Main features:
-- MUI graphical interface with tabbed organization
-- Complete CLI tool (u64ctl) for scripting and automation
 - Load and run PRG files and CRT cartridges
 - Mount/unmount disk images (D64, G64, D71, G71, D81)
 - Direct C64 memory peek/poke operations
@@ -31,6 +33,15 @@ Main features:
 - Persistent configuration management
 - Static library for embedding in custom applications
 - Native AmigaOS integration with ENV: variable storage
+
+SID Player features:
+- Playlist management with drag-and-drop support
+- Multi-subsong navigation within SID files
+- Song length database support (Songlengths.md5)
+- Auto-discovery of song databases
+- Shuffle and repeat playback modes
+- Visual progress tracking with time display
+- Automatic subsong advancement
 
 File format support:
 - Disk images: D64, G64, D71, G71, D81
@@ -46,31 +57,42 @@ CLI Examples:
 - u64ctl peek ADDRESS 0xd020            # Read memory
 - u64ctl playsid FILE music.sid         # Play SID file
 
+SID Player usage:
+1. Copy Songlengths.md5 to program directory (optional)
+2. Configure Ultimate64 IP address in Settings
+3. Press Connect button
+4. Add SID files to playlist
+5. Double-click to play or use control buttons
+
 Requirements:
 - AmigaOS 3.0+
-- MUI 3.8+ (for GUI version)
+- MUI 3.8+ (for GUI applications)
 - bsdsocket.library
 - TCP/IP stack (AmiTCP, Miami, Roadshow, etc.)
 - Ultimate64 or Ultimate-II device with network connectivity
-- At least 2MB RAM (4MB recommended for MUI)
+- At least 2MB RAM (8MB recommended for MUI applications)
 
 Package contents:
-- u64ctlMUI - MUI graphical interface
+- u64ctlMUI - MUI graphical control interface
 - u64ctl - Command-line interface tool
+- u64sidplayer - SID music player with playlist
 - libultimate64.a - Static library for developers
-
 
 Credits:
 - Developed by Marcin Spoczynski @sandlbn
 - Tested with Ultimate64 firmware 3.12a
 - Built with m68k-amigaos-gcc cross-compiler
+- Song length database support for HVSC format
 
 Source code: https://github.com/sandlbn/u64ctl
 
-Ultimate64 Control Library 1.0 (2025)
-- Initial release with CLI and MUI interfaces
+Ultimate64 Control Library 0.2.0 (2025)
+- Added advanced SID music player with playlist support
+- Multi-subsong navigation and automatic advancement
+- Song length database integration (Songlengths.md5)
+- Enhanced MUI interfaces with improved user experience
 - Full Ultimate64/Ultimate-II device support
-- Comprehensive file format support (PRG, CRT, D64, G64, D71, G71, D81, SID, MOD)
+- File format support (PRG, CRT, D64, G64, D71, G71, D81, SID, MOD)
 - Robust network communication with retry logic
 - Persistent configuration management through ENV: variables
 - Native Amiga integration with MUI interface
