@@ -2757,11 +2757,30 @@ APP_Play(void)
 
 static BOOL APP_Stop(void)
 {
+    LONG result;
+    
     if (!objApp) return FALSE;
 
     if (objApp->state == PLAYER_PLAYING) {
         objApp->state = PLAYER_STOPPED;
         objApp->current_time = 0;
+        
+        /* Reset the Ultimate64 when stopping playback */
+        if (objApp->connection) {
+            result = U64_Reset(objApp->connection);
+            if (result != U64_OK) {
+                /* Build error message manually to avoid sprintf issues */
+                static char error_msg[256];
+                strcpy(error_msg, "Reset failed: ");
+                strcat(error_msg, U64_GetErrorString(result));
+                APP_UpdateStatus(error_msg);
+                U64_DEBUG("Reset failed: %s", U64_GetErrorString(result));
+                /* Continue anyway - don't return FALSE just because reset failed */
+            } else {
+                U64_DEBUG("Reset successful after stop");
+            }
+        }
+        
         APP_UpdateCurrentSongDisplay();
         APP_UpdateStatus("Stopped");
     }
@@ -2829,9 +2848,29 @@ static BOOL APP_Next(void)
             objApp->current_index = 0;
             set(objApp->LSV_PlaylistList, MUIA_List_Active, 0);
         } else {
-            /* End of playlist */
+            /* End of playlist - Reset and stop */
+            LONG result;
+            
             objApp->state = PLAYER_STOPPED;
-            APP_UpdateStatus("Playlist finished");
+            
+            /* Reset the Ultimate64 when playlist ends */
+            if (objApp->connection) {
+                result = U64_Reset(objApp->connection);
+                if (result != U64_OK) {
+                    /* Build error message manually */
+                    static char error_msg[256];
+                    strcpy(error_msg, "Reset failed at playlist end: ");
+                    strcat(error_msg, U64_GetErrorString(result));
+                    APP_UpdateStatus(error_msg);
+                    U64_DEBUG("Reset failed at playlist end: %s", U64_GetErrorString(result));
+                } else {
+                    U64_DEBUG("Reset successful at playlist end");
+                    APP_UpdateStatus("Playlist finished - Reset complete");
+                }
+            } else {
+                APP_UpdateStatus("Playlist finished");
+            }
+            
             APP_UpdateCurrentSongDisplay();
             return TRUE;
         }
