@@ -1,6 +1,5 @@
-/* Ultimate64 SID Player with Playlist
+/* Ultimate64 SID Player
  * For Amiga OS 3.x by Marcin Spoczynski
- * Fixed version based on working MUI implementation
  */
 
 #include <dos/dos.h>
@@ -29,39 +28,10 @@
 #include <time.h>
 
 #include "ultimate64_amiga.h"
+#include "ultimate64_private.h"
 
 /* Version string */
-static const char version[] = "$VER: u64sidplayer 1.0 (2025)";
-
-/* MUI Object creation macros */
-#define ApplicationObject   MUI_NewObject(MUIC_Application
-#define WindowObject        MUI_NewObject(MUIC_Window
-#define VGroup              MUI_NewObject(MUIC_Group
-#define HGroup              MUI_NewObject(MUIC_Group, MUIA_Group_Horiz, TRUE
-#define GroupObject         MUI_NewObject(MUIC_Group
-#define StringObject        MUI_NewObject(MUIC_String
-#define TextObject          MUI_NewObject(MUIC_Text
-#define ListviewObject      MUI_NewObject(MUIC_Listview
-#define GaugeObject         MUI_NewObject(MUIC_Gauge
-#define SimpleButton(text)                                                    \
-  MUI_NewObject (                                                             \
-      MUIC_Text, MUIA_Frame, MUIV_Frame_Button, MUIA_Font, MUIV_Font_Button,  \
-      MUIA_Text_Contents, text, MUIA_Text_PreParse, "\33c", MUIA_Background,  \
-      MUII_ButtonBack, MUIA_InputMode, MUIV_InputMode_RelVerify, TAG_DONE)
-#define Label(text)                                                           \
-  MUI_NewObject (MUIC_Text, MUIA_Text_Contents, text, MUIA_Text_PreParse,     \
-                 "\33r", TAG_DONE)
-
-/* Define IPTR if not available */
-#ifndef IPTR
-#define IPTR ULONG
-#endif
-
-/* MAKE_ID macro if not defined */
-#ifndef MAKE_ID
-#define MAKE_ID(a, b, c, d)                                                   \
-  ((ULONG)(a) << 24 | (ULONG)(b) << 16 | (ULONG)(c) << 8 | (ULONG)(d))
-#endif
+static const char version[] = "$VER: u64sidplayer 0.2.0 (2025)";
 
 /* Constants */
 #define DEFAULT_SONG_LENGTH 300 /* 5 minutes in seconds */
@@ -74,35 +44,63 @@ static const char version[] = "$VER: u64sidplayer 1.0 (2025)";
 #define ENV_ULTIMATE64_PASSWORD "Ultimate64/Password"
 #define ENV_ULTIMATE64_SID_DIR "Ultimate64/SidDir"
 
-#ifdef DEBUG
-#define DPRINTF(fmt, ...) DPRINTF (fmt, ##__VA_ARGS__)
-#else
-#define DPRINTF(fmt, ...) /* nothing */
+/* Event IDs */
+enum EVENT_IDS {
+  EVENT_CONNECT = 100,
+  EVENT_ADD_FILE,
+  EVENT_REMOVE_FILE,
+  EVENT_CLEAR_PLAYLIST,
+  EVENT_PLAY,
+  EVENT_STOP,
+  EVENT_NEXT,
+  EVENT_PREV,
+  EVENT_SHUFFLE,
+  EVENT_REPEAT,
+  EVENT_LOAD_SONGLENGTHS,
+  EVENT_QUIT,
+  EVENT_ABOUT,
+  EVENT_PLAYLIST_DCLICK,
+  EVENT_PLAYLIST_ACTIVE,
+  EVENT_CONFIG_OPEN,
+  EVENT_CONFIG_OK,
+  EVENT_CONFIG_CANCEL,
+  EVENT_CONFIG_CLEAR,
+  EVENT_TIMER_UPDATE
+};
+
+/* Window IDs */
+#ifndef MAKE_ID
+#define MAKE_ID(a, b, c, d) \
+  ((ULONG)(a) << 24 | (ULONG)(b) << 16 | (ULONG)(c) << 8 | (ULONG)(d))
 #endif
 
-/* MUI IDs */
-enum
-{
-  ID_CONNECT = 1,
-  ID_ADD_FILE,
-  ID_REMOVE_FILE,
-  ID_CLEAR_PLAYLIST,
-  ID_PLAY,
-  ID_STOP,
-  ID_NEXT,
-  ID_PREV,
-  ID_SHUFFLE,
-  ID_REPEAT,
-  ID_LOAD_SONGLENGTHS,
-  ID_QUIT,
-  ID_ABOUT,
-  ID_PLAYLIST_DCLICK,
-  ID_CONFIG_OPEN,
-  ID_CONFIG_OK,
-  ID_CONFIG_CANCEL,
-  ID_CONFIG_CLEAR,
-  ID_TIMER_UPDATE
-};
+#define APP_ID_WIN_MAIN MAKE_ID('S', 'I', 'D', '0')
+#define APP_ID_WIN_CONFIG MAKE_ID('S', 'I', 'D', '1')
+
+/* Custom button creation function to avoid macro conflicts */
+#define U64SimpleButton(text) \
+  MUI_NewObject(MUIC_Text, \
+    MUIA_Frame, MUIV_Frame_Button, \
+    MUIA_Font, MUIV_Font_Button, \
+    MUIA_Text_Contents, text, \
+    MUIA_Text_PreParse, "\33c", \
+    MUIA_Background, MUII_ButtonBack, \
+    MUIA_InputMode, MUIV_InputMode_RelVerify, \
+    TAG_DONE)
+
+#define U64Label(text) \
+  MUI_NewObject(MUIC_Text, \
+    MUIA_Text_Contents, text, \
+    MUIA_Text_PreParse, "\33r", \
+    TAG_DONE)
+
+#define U64CheckMark(selected) \
+  MUI_NewObject(MUIC_Image, \
+    MUIA_Image_Spec, MUII_CheckMark, \
+    MUIA_InputMode, MUIV_InputMode_Toggle, \
+    MUIA_Image_FreeVert, TRUE, \
+    MUIA_Selected, selected, \
+    TAG_DONE)
 
 /* Playlist entry structure */
 typedef struct PlaylistEntry
@@ -111,22 +109,10 @@ typedef struct PlaylistEntry
   STRPTR title;
   UBYTE md5[MD5_HASH_SIZE];
   ULONG duration; /* in seconds, 0 = unknown */
-  UWORD subsongs; /* Move UWORD fields together for better alignment */
+  UWORD subsongs;
   UWORD current_subsong;
-  ULONG _padding; /* Add padding to ensure proper alignment */
   struct PlaylistEntry *next;
 } PlaylistEntry;
-
-/* Global variables to cache current song info - this prevents corruption */
-static struct
-{
-  UWORD cached_subsongs;
-  UWORD cached_current;
-  ULONG cached_duration;
-  char cached_title[256];
-  char cached_filename[256];
-  BOOL cache_valid;
-} current_song_cache = { 0, 0, 0, "", "", FALSE };
 
 /* Song length database entry */
 typedef struct SongLengthEntry
@@ -146,47 +132,51 @@ typedef enum
 } PlayerState;
 
 /* Application data structure */
-struct SIDPlayerData
+struct ObjApp
 {
-  Object *app;
-  Object *window;
+  /* MUI Application and Windows */
+  Object *App;
+  Object *WIN_Main;
+  Object *WIN_Config;
 
-  /* Configuration window */
-  Object *config_window;
-  Object *config_host_string;
-  Object *config_password_string;
+  /* Connection controls */
+  Object *BTN_Connect;
+  Object *BTN_LoadSongLengths;
+  Object *TXT_Status;
+  Object *TXT_ConnectionStatus;
 
-  /* Connection */
-  Object *btn_connect;
-  Object *btn_load_songlengths;
-  Object *txt_status;
-  Object *txt_connection_status;
-
-  /* Playlist */
-  Object *playlist_list;
-  Object *btn_add_file;
-  Object *btn_remove_file;
-  Object *btn_clear_playlist;
+  /* Playlist controls */
+  Object *LSV_PlaylistList;
+  Object *BTN_AddFile;
+  Object *BTN_RemoveFile;
+  Object *BTN_ClearPlaylist;
 
   /* Player controls */
-  Object *btn_play;
-  Object *btn_stop;
-  Object *btn_next;
-  Object *btn_prev;
-  Object *btn_shuffle;
-  Object *btn_repeat;
+  Object *BTN_Play;
+  Object *BTN_Stop;
+  Object *BTN_Next;
+  Object *BTN_Prev;
+  Object *CHK_Shuffle;
+  Object *CHK_Repeat;
 
   /* Current song info */
-  Object *txt_current_song;
-  Object *txt_current_time;
-  Object *txt_total_time;
-  Object *progress_gauge;
-  Object *txt_subsong_info;
+  Object *TXT_CurrentSong;
+  Object *TXT_CurrentTime;
+  Object *TXT_TotalTime;
+  Object *GAU_Progress;
+  Object *TXT_SubsongInfo;
 
-  /* Configuration strings */
-  char host[256];
-  char password[256];
-  char last_sid_dir[256];
+  /* Configuration window */
+  Object *STR_ConfigHost;
+  Object *STR_ConfigPassword;
+  Object *BTN_ConfigOK;
+  Object *BTN_ConfigCancel;
+
+  /* Menu */
+  Object *MN_Main;
+  Object *MN_Project_About;
+  Object *MN_Project_Config;
+  Object *MN_Project_Quit;
 
   /* Data */
   U64Connection *connection;
@@ -198,59 +188,112 @@ struct SIDPlayerData
 
   /* Player state */
   PlayerState state;
-  ULONG current_time; /* Current playback time in seconds */
-  ULONG total_time;   /* Total song time in seconds */
+  ULONG current_time;
+  ULONG total_time;
   BOOL shuffle_mode;
   BOOL repeat_mode;
-  ULONG timer_counter; /* Simple counter for timing */
+  ULONG timer_counter;
+
+  /* Configuration */
+  char host[256];
+  char password[256];
+  char last_sid_dir[256];
 };
 
-/* Library bases */
+/* Global variables */
 struct Library *MUIMasterBase = NULL;
+struct Library *AslBase = NULL;
+struct ObjApp *objApp = NULL;
 
-/* Menu structure */
-struct NewMenu MainMenu[]
-    = { { NM_TITLE, (STRPTR) "Project", NULL, 0, 0, NULL },
-        { NM_ITEM, (STRPTR) "About...", (STRPTR) "?", 0, 0, (APTR)ID_ABOUT },
-        { NM_ITEM, NM_BARLABEL, NULL, 0, 0, NULL },
-        { NM_ITEM, (STRPTR) "Quit", (STRPTR) "Q", 0, 0, (APTR)ID_QUIT },
+/* Simple cache for current song info to prevent corruption */
+static struct {
+  UWORD cached_subsongs;
+  UWORD cached_current;
+  ULONG cached_duration;
+  char cached_title[256];
+  char cached_filename[256];
+  BOOL cache_valid;
+} current_song_cache = { 0, 0, 0, "", "", FALSE };
 
-        { NM_TITLE, (STRPTR) "Settings", NULL, 0, 0, NULL },
-        { NM_ITEM, (STRPTR) "Configure...", (STRPTR) "C", 0, 0,
-          (APTR)ID_CONFIG_OPEN },
-        { NM_ITEM, NM_BARLABEL, NULL, 0, 0, NULL },
-        { NM_ITEM, (STRPTR) "Clear Settings", NULL, 0, 0,
-          (APTR)ID_CONFIG_CLEAR },
+/* Forward declarations */
+static BOOL InitLibs(void);
+static void CleanupLibs(void);
+static struct ObjApp *CreateApp(void);
+static void DisposeApp(struct ObjApp *obj);
+static void CreateWindowMain(struct ObjApp *obj);
+static void CreateWindowMainEvents(struct ObjApp *obj);
+static void CreateWindowConfig(struct ObjApp *obj);
+static void CreateWindowConfigEvents(struct ObjApp *obj);
+static void CreateMenu(struct ObjApp *obj);
+static void CreateMenuEvents(struct ObjApp *obj);
 
-        { NM_END, NULL, NULL, 0, 0, NULL } };
+/* Application functions */
+static BOOL APP_Init(void);
+static void APP_UpdateStatus(CONST_STRPTR text);
+static void APP_UpdatePlaylistDisplay(void);
+static void APP_UpdateCurrentSongDisplay(void);
+static void APP_UpdateCurrentSongCache(void);
+static BOOL APP_Connect(void);
+static BOOL APP_AddFiles(void);
+static BOOL APP_RemoveFile(void);
+static BOOL APP_ClearPlaylist(void);
+static BOOL APP_Play(void);
+static BOOL APP_Stop(void);
+static BOOL APP_Next(void);
+static BOOL APP_Prev(void);
+static BOOL APP_LoadSongLengths(void);
+static BOOL APP_About(void);
+static BOOL APP_ConfigOpen(void);
+static BOOL APP_ConfigOK(void);
+static BOOL APP_ConfigCancel(void);
+static BOOL APP_PlaylistDoubleClick(void);
+static BOOL APP_PlaylistActive(void);
+static void APP_TimerUpdate(void);
 
-/* Simple MD5 implementation for SID files */
-typedef struct
-{
+/* Memory management functions */
+static STRPTR SafeStrDup(CONST_STRPTR str);
+static void SafeStrFree(STRPTR str);
+static void FreePlaylists(struct ObjApp *obj);
+static void FreeSongLengthDB(struct ObjApp *obj);
+
+/* Configuration functions */
+static BOOL LoadConfig(struct ObjApp *obj);
+static BOOL SaveConfig(struct ObjApp *obj);
+static STRPTR ReadEnvVar(CONST_STRPTR var_name);
+static BOOL WriteEnvVar(CONST_STRPTR var_name, CONST_STRPTR value, BOOL persistent);
+
+/* Playlist functions */
+static BOOL AddPlaylistEntry(struct ObjApp *obj, CONST_STRPTR filename);
+static BOOL PlayCurrentSong(struct ObjApp *obj);
+static ULONG FindSongLength(struct ObjApp *obj, const UBYTE md5[MD5_HASH_SIZE], UWORD subsong);
+
+/* MD5 and file functions */
+static BOOL LoadFile(CONST_STRPTR filename, UBYTE **data, ULONG *size);
+static void CalculateMD5(const UBYTE *data, ULONG size, UBYTE digest[MD5_HASH_SIZE]);
+static STRPTR ExtractSIDTitle(const UBYTE *data, ULONG size);
+static UWORD ParseSIDSubsongs(const UBYTE *data, ULONG size);
+static ULONG ParseTimeString(const char *time_str);
+
+/* Song length database functions */
+static BOOL LoadSongLengthsWithProgress(struct ObjApp *obj, CONST_STRPTR filename);
+static BOOL HexStringToMD5(const char *hex_string, UBYTE hash[MD5_HASH_SIZE]);
+static void MD5ToHexString(const UBYTE hash[MD5_HASH_SIZE], char hex_string[MD5_STRING_SIZE]);
+static BOOL CheckSongLengthsFile(char *filepath, ULONG filepath_size);
+static void AutoLoadSongLengths(struct ObjApp *obj);
+
+/* MD5 implementation */
+typedef struct {
   ULONG state[4];
   ULONG count[2];
   UBYTE buffer[64];
 } MD5_CTX;
 
-static char global_subsong_str[64] = "";
+static void MD5Init(MD5_CTX *ctx);
+static void MD5Update(MD5_CTX *ctx, const UBYTE *input, ULONG inputLen);
+static void MD5Final(UBYTE digest[MD5_HASH_SIZE], MD5_CTX *ctx);
+static void MD5Transform(ULONG state[4], const UBYTE block[64]);
 
-/* Forward declarations */
-static void UpdateStatus (struct SIDPlayerData *data, CONST_STRPTR text);
-static void UpdatePlaylistDisplay (struct SIDPlayerData *data);
-static void UpdateCurrentSongDisplay (struct SIDPlayerData *data);
-static ULONG ParseTimeString (const char *time_str);
-static void FreeSongLengthDB (struct SIDPlayerData *data);
-static void ClearSidDirectoryPref (struct SIDPlayerData *data);
-static ULONG FindSongLength (struct SIDPlayerData *data,
-                             const UBYTE md5[MD5_HASH_SIZE], UWORD subsong);
-static void OpenConfigWindow (struct SIDPlayerData *data);
-/* MD5 function prototypes */
-static void MD5Init (MD5_CTX *ctx);
-static void MD5Update (MD5_CTX *ctx, const UBYTE *input, ULONG inputLen);
-static void MD5Final (UBYTE digest[MD5_HASH_SIZE], MD5_CTX *ctx);
-static void MD5Transform (ULONG state[4], const UBYTE block[64]);
-
-/* MD5 constants */
+/* MD5 constants and functions */
 #define S11 7
 #define S12 12
 #define S13 17
@@ -268,7 +311,6 @@ static void MD5Transform (ULONG state[4], const UBYTE block[64]);
 #define S43 15
 #define S44 21
 
-/* MD5 auxiliary functions */
 #define F(x, y, z) (((x) & (y)) | ((~x) & (z)))
 #define G(x, y, z) (((x) & (z)) | ((y) & (~z)))
 #define H(x, y, z) ((x) ^ (y) ^ (z))
@@ -276,3262 +318,2965 @@ static void MD5Transform (ULONG state[4], const UBYTE block[64]);
 
 #define ROTATE_LEFT(x, n) (((x) << (n)) | ((x) >> (32 - (n))))
 
-#define FF(a, b, c, d, x, s, ac)                                              \
-  {                                                                           \
-    (a) += F ((b), (c), (d)) + (x) + (ULONG)(ac);                             \
-    (a) = ROTATE_LEFT ((a), (s));                                             \
-    (a) += (b);                                                               \
-  }
-#define GG(a, b, c, d, x, s, ac)                                              \
-  {                                                                           \
-    (a) += G ((b), (c), (d)) + (x) + (ULONG)(ac);                             \
-    (a) = ROTATE_LEFT ((a), (s));                                             \
-    (a) += (b);                                                               \
-  }
-#define HH(a, b, c, d, x, s, ac)                                              \
-  {                                                                           \
-    (a) += H ((b), (c), (d)) + (x) + (ULONG)(ac);                             \
-    (a) = ROTATE_LEFT ((a), (s));                                             \
-    (a) += (b);                                                               \
-  }
-#define II(a, b, c, d, x, s, ac)                                              \
-  {                                                                           \
-    (a) += I ((b), (c), (d)) + (x) + (ULONG)(ac);                             \
-    (a) = ROTATE_LEFT ((a), (s));                                             \
-    (a) += (b);                                                               \
-  }
+#define FF(a, b, c, d, x, s, ac) { \
+  (a) += F ((b), (c), (d)) + (x) + (ULONG)(ac); \
+  (a) = ROTATE_LEFT ((a), (s)); \
+  (a) += (b); \
+}
+#define GG(a, b, c, d, x, s, ac) { \
+  (a) += G ((b), (c), (d)) + (x) + (ULONG)(ac); \
+  (a) = ROTATE_LEFT ((a), (s)); \
+  (a) += (b); \
+}
+#define HH(a, b, c, d, x, s, ac) { \
+  (a) += H ((b), (c), (d)) + (x) + (ULONG)(ac); \
+  (a) = ROTATE_LEFT ((a), (s)); \
+  (a) += (b); \
+}
+#define II(a, b, c, d, x, s, ac) { \
+  (a) += I ((b), (c), (d)) + (x) + (ULONG)(ac); \
+  (a) = ROTATE_LEFT ((a), (s)); \
+  (a) += (b); \
+}
+
+static UBYTE PADDING[64] = {
+  0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+};
+
+/* Library initialization */
+static BOOL InitLibs(void)
+{
+    if (!(MUIMasterBase = OpenLibrary(MUIMASTER_NAME, 19))) {
+        return FALSE;
+    }
+
+    if (!(AslBase = OpenLibrary("asl.library", 37))) {
+        CloseLibrary(MUIMasterBase);
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
+static void CleanupLibs(void)
+{
+    if (AslBase) CloseLibrary(AslBase);
+    if (MUIMasterBase) CloseLibrary(MUIMasterBase);
+}
+
+/* Safe string duplication */
+static STRPTR SafeStrDup(CONST_STRPTR str)
+{
+    STRPTR result;
+    ULONG len;
+    
+    if (!str) return NULL;
+    
+    len = strlen(str) + 1;
+    result = AllocVec(len, MEMF_PUBLIC | MEMF_CLEAR);
+    if (result) {
+        strcpy(result, str);
+    }
+    return result;
+}
+
+static void SafeStrFree(STRPTR str)
+{
+    if (str) {
+        FreeVec(str);
+    }
+}
+
+/* Environment variable functions */
+static STRPTR ReadEnvVar(CONST_STRPTR var_name)
+{
+    LONG result;
+    STRPTR buffer;
+    ULONG buffer_size = 256;
+
+    buffer = AllocVec(buffer_size, MEMF_PUBLIC | MEMF_CLEAR);
+    if (!buffer) {
+        return NULL;
+    }
+
+    result = GetVar((STRPTR)var_name, buffer, buffer_size, GVF_GLOBAL_ONLY);
+
+    if (result > 0) {
+        STRPTR final_buffer = AllocVec(result + 1, MEMF_PUBLIC);
+        if (final_buffer) {
+            strcpy(final_buffer, buffer);
+            FreeVec(buffer);
+            return final_buffer;
+        }
+    }
+
+    FreeVec(buffer);
+    return NULL;
+}
+
+static BOOL WriteEnvVar(CONST_STRPTR var_name, CONST_STRPTR value, BOOL persistent)
+{
+    LONG result;
+    ULONG flags = GVF_GLOBAL_ONLY;
+
+    if (!var_name || !value) {
+        return FALSE;
+    }
+
+    result = SetVar((STRPTR)var_name, (STRPTR)value, strlen(value), flags);
+
+    if (result && persistent) {
+        BPTR file;
+        STRPTR envarc_path;
+        ULONG path_len = strlen("ENVARC:") + strlen(var_name) + 1;
+
+        envarc_path = AllocVec(path_len, MEMF_PUBLIC);
+        if (envarc_path) {
+            strcpy(envarc_path, "ENVARC:");
+            strcat(envarc_path, var_name);
+
+            STRPTR dir_end = strrchr(envarc_path, '/');
+            if (dir_end) {
+                *dir_end = '\0';
+                CreateDir(envarc_path);
+                *dir_end = '/';
+            }
+
+            file = Open(envarc_path, MODE_NEWFILE);
+            if (file) {
+                Write(file, (STRPTR)value, strlen(value));
+                Close(file);
+            }
+
+            FreeVec(envarc_path);
+        }
+    }
+
+    return result ? TRUE : FALSE;
+}
+
+/* Configuration functions */
+static BOOL LoadConfig(struct ObjApp *obj)
+{
+    STRPTR env_host, env_password, env_dir;
+
+    env_host = ReadEnvVar(ENV_ULTIMATE64_HOST);
+    if (env_host) {
+        strcpy(obj->host, env_host);
+        FreeVec(env_host);
+    } else {
+        obj->host[0] = '\0';
+    }
+
+    env_password = ReadEnvVar(ENV_ULTIMATE64_PASSWORD);
+    if (env_password) {
+        strcpy(obj->password, env_password);
+        FreeVec(env_password);
+    } else {
+        obj->password[0] = '\0';
+    }
+
+    env_dir = ReadEnvVar(ENV_ULTIMATE64_SID_DIR);
+    if (env_dir) {
+        strncpy(obj->last_sid_dir, env_dir, sizeof(obj->last_sid_dir) - 1);
+        obj->last_sid_dir[sizeof(obj->last_sid_dir) - 1] = '\0';
+        FreeVec(env_dir);
+    } else {
+        strcpy(obj->last_sid_dir, "");
+    }
+
+    return TRUE;
+}
+
+static BOOL SaveConfig(struct ObjApp *obj)
+{
+    WriteEnvVar(ENV_ULTIMATE64_HOST, obj->host, TRUE);
+    if (strlen(obj->password) > 0) {
+        WriteEnvVar(ENV_ULTIMATE64_PASSWORD, obj->password, TRUE);
+    } else {
+        DeleteVar(ENV_ULTIMATE64_PASSWORD, GVF_GLOBAL_ONLY);
+        DeleteFile("ENVARC:" ENV_ULTIMATE64_PASSWORD);
+    }
+    
+    if (strlen(obj->last_sid_dir) > 0) {
+        WriteEnvVar(ENV_ULTIMATE64_SID_DIR, obj->last_sid_dir, TRUE);
+    }
+    
+    return TRUE;
+}
 
 /* MD5 implementation */
-static UBYTE PADDING[64]
-    = { 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0,    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0,    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-
-static void
-MD5Init (MD5_CTX *ctx)
+static void MD5Init(MD5_CTX *ctx)
 {
-  ctx->count[0] = ctx->count[1] = 0;
-  ctx->state[0] = 0x67452301;
-  ctx->state[1] = 0xefcdab89;
-  ctx->state[2] = 0x98badcfe;
-  ctx->state[3] = 0x10325476;
+    ctx->count[0] = ctx->count[1] = 0;
+    ctx->state[0] = 0x67452301;
+    ctx->state[1] = 0xefcdab89;
+    ctx->state[2] = 0x98badcfe;
+    ctx->state[3] = 0x10325476;
 }
 
-static void
-MD5Update (MD5_CTX *ctx, const UBYTE *input, ULONG inputLen)
+static void MD5Update(MD5_CTX *ctx, const UBYTE *input, ULONG inputLen)
 {
-  ULONG i, index, partLen;
+    ULONG i, index, partLen;
 
-  index = (ULONG)((ctx->count[0] >> 3) & 0x3F);
+    index = (ULONG)((ctx->count[0] >> 3) & 0x3F);
 
-  if ((ctx->count[0] += ((ULONG)inputLen << 3)) < ((ULONG)inputLen << 3))
-    ctx->count[1]++;
-  ctx->count[1] += ((ULONG)inputLen >> 29);
+    if ((ctx->count[0] += ((ULONG)inputLen << 3)) < ((ULONG)inputLen << 3))
+        ctx->count[1]++;
+    ctx->count[1] += ((ULONG)inputLen >> 29);
 
-  partLen = 64 - index;
+    partLen = 64 - index;
 
-  if (inputLen >= partLen)
-    {
-      CopyMem ((APTR)input, (APTR)&ctx->buffer[index], partLen);
-      MD5Transform (ctx->state, ctx->buffer);
+    if (inputLen >= partLen) {
+        CopyMem((APTR)input, (APTR)&ctx->buffer[index], partLen);
+        MD5Transform(ctx->state, ctx->buffer);
 
-      for (i = partLen; i + 63 < inputLen; i += 64)
-        MD5Transform (ctx->state, &input[i]);
+        for (i = partLen; i + 63 < inputLen; i += 64)
+            MD5Transform(ctx->state, &input[i]);
 
-      index = 0;
-    }
-  else
-    i = 0;
+        index = 0;
+    } else
+        i = 0;
 
-  CopyMem ((APTR)&input[i], (APTR)&ctx->buffer[index], inputLen - i);
+    CopyMem((APTR)&input[i], (APTR)&ctx->buffer[index], inputLen - i);
 }
 
-static void
-MD5Final (UBYTE digest[MD5_HASH_SIZE], MD5_CTX *ctx)
+static void MD5Final(UBYTE digest[MD5_HASH_SIZE], MD5_CTX *ctx)
 {
-  UBYTE bits[8];
-  ULONG index, padLen;
+    UBYTE bits[8];
+    ULONG index, padLen;
 
-  /* Save number of bits */
-  bits[0] = (UBYTE)(ctx->count[0] & 0xFF);
-  bits[1] = (UBYTE)((ctx->count[0] >> 8) & 0xFF);
-  bits[2] = (UBYTE)((ctx->count[0] >> 16) & 0xFF);
-  bits[3] = (UBYTE)((ctx->count[0] >> 24) & 0xFF);
-  bits[4] = (UBYTE)(ctx->count[1] & 0xFF);
-  bits[5] = (UBYTE)((ctx->count[1] >> 8) & 0xFF);
-  bits[6] = (UBYTE)((ctx->count[1] >> 16) & 0xFF);
-  bits[7] = (UBYTE)((ctx->count[1] >> 24) & 0xFF);
+    /* Save number of bits */
+    bits[0] = (UBYTE)(ctx->count[0] & 0xFF);
+    bits[1] = (UBYTE)((ctx->count[0] >> 8) & 0xFF);
+    bits[2] = (UBYTE)((ctx->count[0] >> 16) & 0xFF);
+    bits[3] = (UBYTE)((ctx->count[0] >> 24) & 0xFF);
+    bits[4] = (UBYTE)(ctx->count[1] & 0xFF);
+    bits[5] = (UBYTE)((ctx->count[1] >> 8) & 0xFF);
+    bits[6] = (UBYTE)((ctx->count[1] >> 16) & 0xFF);
+    bits[7] = (UBYTE)((ctx->count[1] >> 24) & 0xFF);
 
-  /* Pad out to 56 mod 64. */
-  index = (ULONG)((ctx->count[0] >> 3) & 0x3f);
-  padLen = (index < 56) ? (56 - index) : (120 - index);
-  MD5Update (ctx, PADDING, padLen);
+    /* Pad out to 56 mod 64. */
+    index = (ULONG)((ctx->count[0] >> 3) & 0x3f);
+    padLen = (index < 56) ? (56 - index) : (120 - index);
+    MD5Update(ctx, PADDING, padLen);
 
-  /* Append length (before padding) */
-  MD5Update (ctx, bits, 8);
+    /* Append length (before padding) */
+    MD5Update(ctx, bits, 8);
 
-  /* Store state in digest */
-  for (index = 0; index < 16; index++)
-    {
-      digest[index]
-          = (UBYTE)((ctx->state[index >> 2] >> ((index & 3) << 3)) & 0xFF);
+    /* Store state in digest */
+    for (index = 0; index < 16; index++) {
+        digest[index] = (UBYTE)((ctx->state[index >> 2] >> ((index & 3) << 3)) & 0xFF);
     }
 
-  /* Zeroize sensitive information. */
-  memset ((APTR)ctx, 0, sizeof (*ctx));
+    /* Zeroize sensitive information. */
+    memset((APTR)ctx, 0, sizeof(*ctx));
 }
 
-static void
-MD5Transform (ULONG state[4], const UBYTE block[64])
+static void MD5Transform(ULONG state[4], const UBYTE block[64])
 {
-  ULONG a = state[0], b = state[1], c = state[2], d = state[3], x[16];
-  ULONG i;
+    ULONG a = state[0], b = state[1], c = state[2], d = state[3], x[16];
+    ULONG i;
 
-  for (i = 0; i < 16; i++)
-    {
-      x[i] = (ULONG)block[i * 4] | ((ULONG)block[i * 4 + 1] << 8)
+    for (i = 0; i < 16; i++) {
+        x[i] = (ULONG)block[i * 4] | ((ULONG)block[i * 4 + 1] << 8)
              | ((ULONG)block[i * 4 + 2] << 16)
              | ((ULONG)block[i * 4 + 3] << 24);
     }
 
-  /* Round 1 */
-  FF (a, b, c, d, x[0], S11, 0xd76aa478);
-  FF (d, a, b, c, x[1], S12, 0xe8c7b756);
-  FF (c, d, a, b, x[2], S13, 0x242070db);
-  FF (b, c, d, a, x[3], S14, 0xc1bdceee);
-  FF (a, b, c, d, x[4], S11, 0xf57c0faf);
-  FF (d, a, b, c, x[5], S12, 0x4787c62a);
-  FF (c, d, a, b, x[6], S13, 0xa8304613);
-  FF (b, c, d, a, x[7], S14, 0xfd469501);
-  FF (a, b, c, d, x[8], S11, 0x698098d8);
-  FF (d, a, b, c, x[9], S12, 0x8b44f7af);
-  FF (c, d, a, b, x[10], S13, 0xffff5bb1);
-  FF (b, c, d, a, x[11], S14, 0x895cd7be);
-  FF (a, b, c, d, x[12], S11, 0x6b901122);
-  FF (d, a, b, c, x[13], S12, 0xfd987193);
-  FF (c, d, a, b, x[14], S13, 0xa679438e);
-  FF (b, c, d, a, x[15], S14, 0x49b40821);
+    /* Round 1 */
+    FF(a, b, c, d, x[0], S11, 0xd76aa478);
+    FF(d, a, b, c, x[1], S12, 0xe8c7b756);
+    FF(c, d, a, b, x[2], S13, 0x242070db);
+    FF(b, c, d, a, x[3], S14, 0xc1bdceee);
+    FF(a, b, c, d, x[4], S11, 0xf57c0faf);
+    FF(d, a, b, c, x[5], S12, 0x4787c62a);
+    FF(c, d, a, b, x[6], S13, 0xa8304613);
+    FF(b, c, d, a, x[7], S14, 0xfd469501);
+    FF(a, b, c, d, x[8], S11, 0x698098d8);
+    FF(d, a, b, c, x[9], S12, 0x8b44f7af);
+    FF(c, d, a, b, x[10], S13, 0xffff5bb1);
+    FF(b, c, d, a, x[11], S14, 0x895cd7be);
+    FF(a, b, c, d, x[12], S11, 0x6b901122);
+    FF(d, a, b, c, x[13], S12, 0xfd987193);
+    FF(c, d, a, b, x[14], S13, 0xa679438e);
+    FF(b, c, d, a, x[15], S14, 0x49b40821);
 
-  /* Round 2 */
-  GG (a, b, c, d, x[1], S21, 0xf61e2562);
-  GG (d, a, b, c, x[6], S22, 0xc040b340);
-  GG (c, d, a, b, x[11], S23, 0x265e5a51);
-  GG (b, c, d, a, x[0], S24, 0xe9b6c7aa);
-  GG (a, b, c, d, x[5], S21, 0xd62f105d);
-  GG (d, a, b, c, x[10], S22, 0x2441453);
-  GG (c, d, a, b, x[15], S23, 0xd8a1e681);
-  GG (b, c, d, a, x[4], S24, 0xe7d3fbc8);
-  GG (a, b, c, d, x[9], S21, 0x21e1cde6);
-  GG (d, a, b, c, x[14], S22, 0xc33707d6);
-  GG (c, d, a, b, x[3], S23, 0xf4d50d87);
-  GG (b, c, d, a, x[8], S24, 0x455a14ed);
-  GG (a, b, c, d, x[13], S21, 0xa9e3e905);
-  GG (d, a, b, c, x[2], S22, 0xfcefa3f8);
-  GG (c, d, a, b, x[7], S23, 0x676f02d9);
-  GG (b, c, d, a, x[12], S24, 0x8d2a4c8a);
+    /* Round 2 */
+    GG(a, b, c, d, x[1], S21, 0xf61e2562);
+    GG(d, a, b, c, x[6], S22, 0xc040b340);
+    GG(c, d, a, b, x[11], S23, 0x265e5a51);
+    GG(b, c, d, a, x[0], S24, 0xe9b6c7aa);
+    GG(a, b, c, d, x[5], S21, 0xd62f105d);
+    GG(d, a, b, c, x[10], S22, 0x2441453);
+    GG(c, d, a, b, x[15], S23, 0xd8a1e681);
+    GG(b, c, d, a, x[4], S24, 0xe7d3fbc8);
+    GG(a, b, c, d, x[9], S21, 0x21e1cde6);
+    GG(d, a, b, c, x[14], S22, 0xc33707d6);
+    GG(c, d, a, b, x[3], S23, 0xf4d50d87);
+    GG(b, c, d, a, x[8], S24, 0x455a14ed);
+    GG(a, b, c, d, x[13], S21, 0xa9e3e905);
+    GG(d, a, b, c, x[2], S22, 0xfcefa3f8);
+    GG(c, d, a, b, x[7], S23, 0x676f02d9);
+    GG(b, c, d, a, x[12], S24, 0x8d2a4c8a);
 
-  /* Round 3 */
-  HH (a, b, c, d, x[5], S31, 0xfffa3942);
-  HH (d, a, b, c, x[8], S32, 0x8771f681);
-  HH (c, d, a, b, x[11], S33, 0x6d9d6122);
-  HH (b, c, d, a, x[14], S34, 0xfde5380c);
-  HH (a, b, c, d, x[1], S31, 0xa4beea44);
-  HH (d, a, b, c, x[4], S32, 0x4bdecfa9);
-  HH (c, d, a, b, x[7], S33, 0xf6bb4b60);
-  HH (b, c, d, a, x[10], S34, 0xbebfbc70);
-  HH (a, b, c, d, x[13], S31, 0x289b7ec6);
-  HH (d, a, b, c, x[0], S32, 0xeaa127fa);
-  HH (c, d, a, b, x[3], S33, 0xd4ef3085);
-  HH (b, c, d, a, x[6], S34, 0x4881d05);
-  HH (a, b, c, d, x[9], S31, 0xd9d4d039);
-  HH (d, a, b, c, x[12], S32, 0xe6db99e5);
-  HH (c, d, a, b, x[15], S33, 0x1fa27cf8);
-  HH (b, c, d, a, x[2], S34, 0xc4ac5665);
+    /* Round 3 */
+    HH(a, b, c, d, x[5], S31, 0xfffa3942);
+    HH(d, a, b, c, x[8], S32, 0x8771f681);
+    HH(c, d, a, b, x[11], S33, 0x6d9d6122);
+    HH(b, c, d, a, x[14], S34, 0xfde5380c);
+    HH(a, b, c, d, x[1], S31, 0xa4beea44);
+    HH(d, a, b, c, x[4], S32, 0x4bdecfa9);
+    HH(c, d, a, b, x[7], S33, 0xf6bb4b60);
+    HH(b, c, d, a, x[10], S34, 0xbebfbc70);
+    HH(a, b, c, d, x[13], S31, 0x289b7ec6);
+    HH(d, a, b, c, x[0], S32, 0xeaa127fa);
+    HH(c, d, a, b, x[3], S33, 0xd4ef3085);
+    HH(b, c, d, a, x[6], S34, 0x4881d05);
+    HH(a, b, c, d, x[9], S31, 0xd9d4d039);
+    HH(d, a, b, c, x[12], S32, 0xe6db99e5);
+    HH(c, d, a, b, x[15], S33, 0x1fa27cf8);
+    HH(b, c, d, a, x[2], S34, 0xc4ac5665);
 
-  /* Round 4 */
-  II (a, b, c, d, x[0], S41, 0xf4292244);
-  II (d, a, b, c, x[7], S42, 0x432aff97);
-  II (c, d, a, b, x[14], S43, 0xab9423a7);
-  II (b, c, d, a, x[5], S44, 0xfc93a039);
-  II (a, b, c, d, x[12], S41, 0x655b59c3);
-  II (d, a, b, c, x[3], S42, 0x8f0ccc92);
-  II (c, d, a, b, x[10], S43, 0xffeff47d);
-  II (b, c, d, a, x[1], S44, 0x85845dd1);
-  II (a, b, c, d, x[8], S41, 0x6fa87e4f);
-  II (d, a, b, c, x[15], S42, 0xfe2ce6e0);
-  II (c, d, a, b, x[6], S43, 0xa3014314);
-  II (b, c, d, a, x[13], S44, 0x4e0811a1);
-  II (a, b, c, d, x[4], S41, 0xf7537e82);
-  II (d, a, b, c, x[11], S42, 0xbd3af235);
-  II (c, d, a, b, x[2], S43, 0x2ad7d2bb);
-  II (b, c, d, a, x[9], S44, 0xeb86d391);
+    /* Round 4 */
+    II(a, b, c, d, x[0], S41, 0xf4292244);
+    II(d, a, b, c, x[7], S42, 0x432aff97);
+    II(c, d, a, b, x[14], S43, 0xab9423a7);
+    II(b, c, d, a, x[5], S44, 0xfc93a039);
+    II(a, b, c, d, x[12], S41, 0x655b59c3);
+    II(d, a, b, c, x[3], S42, 0x8f0ccc92);
+    II(c, d, a, b, x[10], S43, 0xffeff47d);
+    II(b, c, d, a, x[1], S44, 0x85845dd1);
+    II(a, b, c, d, x[8], S41, 0x6fa87e4f);
+    II(d, a, b, c, x[15], S42, 0xfe2ce6e0);
+    II(c, d, a, b, x[6], S43, 0xa3014314);
+    II(b, c, d, a, x[13], S44, 0x4e0811a1);
+    II(a, b, c, d, x[4], S41, 0xf7537e82);
+    II(d, a, b, c, x[11], S42, 0xbd3af235);
+    II(c, d, a, b, x[2], S43, 0x2ad7d2bb);
+    II(b, c, d, a, x[9], S44, 0xeb86d391);
 
-  state[0] += a;
-  state[1] += b;
-  state[2] += c;
-  state[3] += d;
+    state[0] += a;
+    state[1] += b;
+    state[2] += c;
+    state[3] += d;
 
-  /* Zeroize sensitive information. */
-  memset ((APTR)x, 0, sizeof (x));
+    /* Zeroize sensitive information. */
+    memset((APTR)x, 0, sizeof(x));
 }
 
-/* Helper function to calculate MD5 of a buffer */
-static void
-CalculateMD5 (const UBYTE *data, ULONG size, UBYTE digest[MD5_HASH_SIZE])
+static void CalculateMD5(const UBYTE *data, ULONG size, UBYTE digest[MD5_HASH_SIZE])
 {
-  MD5_CTX ctx;
-  MD5Init (&ctx);
-  MD5Update (&ctx, data, size);
-  MD5Final (digest, &ctx);
+    MD5_CTX ctx;
+    MD5Init(&ctx);
+    MD5Update(&ctx, data, size);
+    MD5Final(digest, &ctx);
 }
 
 /* Convert MD5 hash to hex string */
+static void MD5ToHexString(const UBYTE hash[MD5_HASH_SIZE], char hex_string[MD5_STRING_SIZE])
+{
+    static const char hex_chars[] = "0123456789abcdef";
+    int i;
+
+    for (i = 0; i < MD5_HASH_SIZE; i++) {
+        hex_string[i * 2] = hex_chars[(hash[i] >> 4) & 0x0F];
+        hex_string[i * 2 + 1] = hex_chars[hash[i] & 0x0F];
+    }
+    hex_string[MD5_STRING_SIZE - 1] = '\0';
+}
+
+static BOOL HexStringToMD5(const char *hex_string, UBYTE hash[MD5_HASH_SIZE])
+{
+    int i;
+
+    if (strlen(hex_string) != 32) {
+        return FALSE;
+    }
+
+    for (i = 0; i < MD5_HASH_SIZE; i++) {
+        char high = hex_string[i * 2];
+        char low = hex_string[i * 2 + 1];
+
+        if (!isxdigit(high) || !isxdigit(low)) {
+            return FALSE;
+        }
+
+        high = tolower(high);
+        low = tolower(low);
+
+        UBYTE high_val = (high >= 'a') ? (high - 'a' + 10) : (high - '0');
+        UBYTE low_val = (low >= 'a') ? (low - 'a' + 10) : (low - '0');
+
+        hash[i] = (high_val << 4) | low_val;
+    }
+
+    return TRUE;
+}
 static void
-MD5ToHexString (const UBYTE hash[MD5_HASH_SIZE],
-                char hex_string[MD5_STRING_SIZE])
+ULONGToString(ULONG value, char *buffer)
 {
-  static const char hex_chars[] = "0123456789abcdef";
-  int i;
-
-  for (i = 0; i < MD5_HASH_SIZE; i++)
-    {
-      hex_string[i * 2] = hex_chars[(hash[i] >> 4) & 0x0F];
-      hex_string[i * 2 + 1] = hex_chars[hash[i] & 0x0F];
+    int pos = 0;
+    
+    if (value == 0) {
+        buffer[0] = '0';
+        buffer[1] = '\0';
+        return;
     }
-  hex_string[MD5_STRING_SIZE - 1] = '\0';
+    
+    char digits[16];
+    int digit_pos = 0;
+    
+    while (value > 0) {
+        digits[digit_pos++] = '0' + (value % 10);
+        value /= 10;
+    }
+    
+    /* Reverse digits */
+    for (int i = digit_pos - 1; i >= 0; i--) {
+        buffer[pos++] = digits[i];
+    }
+    buffer[pos] = '\0';
 }
-
-static BOOL
-HexStringToMD5 (const char *hex_string, UBYTE hash[MD5_HASH_SIZE])
+/* File loading function */
+static BOOL LoadFile(CONST_STRPTR filename, UBYTE **data, ULONG *size)
 {
-  int i;
+    BPTR file;
+    LONG file_size;
+    UBYTE *buffer;
 
-  if (strlen (hex_string) != 32)
-    {
-      return FALSE;
+    file = Open(filename, MODE_OLDFILE);
+    if (!file) {
+        return FALSE;
     }
 
-  for (i = 0; i < MD5_HASH_SIZE; i++)
-    {
-      char high = hex_string[i * 2];
-      char low = hex_string[i * 2 + 1];
+    Seek(file, 0, OFFSET_END);
+    file_size = Seek(file, 0, OFFSET_BEGINNING);
 
-      if (!isxdigit (high) || !isxdigit (low))
-        {
-          return FALSE;
-        }
-
-      high = tolower (high);
-      low = tolower (low);
-
-      UBYTE high_val = (high >= 'a') ? (high - 'a' + 10) : (high - '0');
-      UBYTE low_val = (low >= 'a') ? (low - 'a' + 10) : (low - '0');
-
-      hash[i] = (high_val << 4) | low_val;
+    if (file_size <= 0) {
+        Close(file);
+        return FALSE;
     }
 
-  return TRUE;
-}
-
-static BOOL
-CheckSongLengthsFile (char *filepath, ULONG filepath_size)
-{
-  BPTR lock;
-  char progdir[256];
-  BOOL found = FALSE;
-
-  /* Get program directory */
-  lock = GetProgramDir ();
-  if (lock)
-    {
-      if (NameFromLock (lock, progdir, sizeof (progdir)))
-        {
-          /* Try common filename variations */
-          const char *filenames[]
-              = { "Songlengths.md5", "songlengths.md5", "SONGLENGTHS.MD5",
-                  "Songlengths.txt", "songlengths.txt", NULL };
-
-          int i;
-          for (i = 0; filenames[i]; i++)
-            {
-              strncpy (filepath, progdir, filepath_size - 1);
-              filepath[filepath_size - 1] = '\0';
-              AddPart (filepath, filenames[i], filepath_size);
-
-              BPTR file = Open (filepath, MODE_OLDFILE);
-              if (file)
-                {
-                  Close (file);
-                  DPRINTF ("Found songlengths file: %s\n", filepath);
-                  found = TRUE;
-                  break;
-                }
-            }
-        }
+    buffer = AllocVec(file_size, MEMF_PUBLIC);
+    if (!buffer) {
+        Close(file);
+        return FALSE;
     }
 
-  if (!found)
-    {
-      /* Also try current directory */
-      const char *filenames[]
-          = { "Songlengths.md5", "songlengths.md5", "SONGLENGTHS.MD5", NULL };
-
-      int i;
-      for (i = 0; filenames[i]; i++)
-        {
-          BPTR file = Open (filenames[i], MODE_OLDFILE);
-          if (file)
-            {
-              Close (file);
-              strcpy (filepath, filenames[i]);
-              DPRINTF ("Found songlengths file in current dir: %s\n",
-                       filepath);
-              found = TRUE;
-              break;
-            }
-        }
+    if (Read(file, buffer, file_size) != file_size) {
+        FreeVec(buffer);
+        Close(file);
+        return FALSE;
     }
 
-  return found;
-}
+    Close(file);
 
-/* Compare two MD5 hashes */
-static BOOL
-MD5Compare (const UBYTE hash1[MD5_HASH_SIZE], const UBYTE hash2[MD5_HASH_SIZE])
-{
-  return (memcmp (hash1, hash2, MD5_HASH_SIZE) == 0);
-}
-
-/* Environment variable functions (same as main_mui.c) */
-static STRPTR
-ReadEnvVar (CONST_STRPTR var_name)
-{
-  LONG result;
-  STRPTR buffer;
-  ULONG buffer_size = 256;
-
-  buffer = AllocMem (buffer_size, MEMF_PUBLIC | MEMF_CLEAR);
-  if (!buffer)
-    {
-      return NULL;
-    }
-
-  result = GetVar ((STRPTR)var_name, buffer, buffer_size, GVF_GLOBAL_ONLY);
-
-  if (result > 0)
-    {
-      STRPTR final_buffer = AllocMem (result + 1, MEMF_PUBLIC);
-      if (final_buffer)
-        {
-          strcpy (final_buffer, buffer);
-          FreeMem (buffer, buffer_size);
-          return final_buffer;
-        }
-    }
-
-  FreeMem (buffer, buffer_size);
-  return NULL;
-}
-
-static void
-UpdateCurrentSongCache (struct SIDPlayerData *data)
-{
-  if (!data->current_entry)
-    {
-      current_song_cache.cache_valid = FALSE;
-      return;
-    }
-
-  DPRINTF ("=== UpdateCurrentSongCache ===\n");
-  DPRINTF ("Reading from entry at: %p\n", data->current_entry);
-
-  /* Disable interrupts while reading to prevent corruption */
-  Forbid ();
-
-  current_song_cache.cached_subsongs = data->current_entry->subsongs;
-  current_song_cache.cached_current = data->current_entry->current_subsong;
-  current_song_cache.cached_duration = data->current_entry->duration;
-
-  if (data->current_entry->title)
-    {
-      strncpy (current_song_cache.cached_title, data->current_entry->title,
-               sizeof (current_song_cache.cached_title) - 1);
-      current_song_cache
-          .cached_title[sizeof (current_song_cache.cached_title) - 1]
-          = '\0';
-    }
-  else
-    {
-      current_song_cache.cached_title[0] = '\0';
-    }
-
-  if (data->current_entry->filename)
-    {
-      strncpy (current_song_cache.cached_filename,
-               data->current_entry->filename,
-               sizeof (current_song_cache.cached_filename) - 1);
-      current_song_cache
-          .cached_filename[sizeof (current_song_cache.cached_filename) - 1]
-          = '\0';
-    }
-  else
-    {
-      current_song_cache.cached_filename[0] = '\0';
-    }
-
-  current_song_cache.cache_valid = TRUE;
-
-  Permit ();
-
-  DPRINTF ("Cached values: subsongs=%d, current=%d, duration=%d\n",
-           current_song_cache.cached_subsongs,
-           current_song_cache.cached_current,
-           (int)current_song_cache.cached_duration);
-  DPRINTF ("Cached title: '%s'\n", current_song_cache.cached_title);
-}
-
-static BOOL
-LoadSongLengthsWithProgress (struct SIDPlayerData *data, CONST_STRPTR filename)
-{
-  BPTR file;
-  char line[1024];
-  SongLengthEntry *entry;
-  ULONG count = 0;
-  ULONG line_count = 0;
-  ULONG processed_lines = 0;
-
-  file = Open (filename, MODE_OLDFILE);
-  if (!file)
-    {
-      UpdateStatus (data, "Cannot open songlengths file");
-      return FALSE;
-    }
-
-  /* First pass: count total lines for progress */
-  UpdateStatus (data, "Analyzing songlengths database...");
-  while (FGets (file, line, sizeof (line)))
-    {
-      line_count++;
-      if ((line_count % 1000) == 0)
-        {
-          char progress_msg[256];
-          sprintf (progress_msg, "Analyzing... %lu lines",
-                   (unsigned long)line_count);
-          UpdateStatus (data, progress_msg);
-
-          /* Process MUI events to keep interface responsive */
-          ULONG signals;
-          DoMethod (data->app, MUIM_Application_Input, &signals);
-        }
-    }
-
-  /* Reset to beginning */
-  Seek (file, 0, OFFSET_BEGINNING);
-
-  /* Free existing database */
-  FreeSongLengthDB (data);
-
-  UpdateStatus (data, "Loading song lengths database...");
-
-  while (FGets (file, line, sizeof (line)))
-    {
-      char *md5_str, *length_str, *pos;
-      UBYTE md5[MD5_HASH_SIZE];
-      char *newline;
-
-      processed_lines++;
-
-      /* Update progress every 100 lines */
-      if ((processed_lines % 100) == 0)
-        {
-          char progress_msg[256];
-          ULONG percent = (processed_lines * 100) / line_count;
-          sprintf (progress_msg, "Loading database... %lu%% (%lu/%lu entries)",
-                   (unsigned long)percent, (unsigned long)processed_lines,
-                   (unsigned long)line_count);
-          UpdateStatus (data, progress_msg);
-
-          /* Process MUI events to keep interface responsive */
-          ULONG signals;
-          DoMethod (data->app, MUIM_Application_Input, &signals);
-        }
-
-      /* Remove trailing newline */
-      newline = strchr (line, '\n');
-      if (newline)
-        *newline = '\0';
-      newline = strchr (line, '\r');
-      if (newline)
-        *newline = '\0';
-
-      /* Skip empty lines and comments */
-      if (line[0] == '\0' || line[0] == '#' || line[0] == ';')
-        {
-          continue;
-        }
-
-      /* Find the '=' separator */
-      pos = strchr (line, '=');
-      if (!pos)
-        {
-          continue;
-        }
-
-      *pos = '\0';
-      md5_str = line;
-      length_str = pos + 1;
-
-      /* Validate MD5 string length */
-      if (strlen (md5_str) != 32)
-        {
-          continue;
-        }
-
-      /* Parse MD5 */
-      if (!HexStringToMD5 (md5_str, md5))
-        {
-          continue;
-        }
-
-      /* Parse lengths */
-      ULONG lengths[256];
-      UWORD num_lengths = 0;
-
-      char length_copy[512];
-      strncpy (length_copy, length_str, sizeof (length_copy) - 1);
-      length_copy[sizeof (length_copy) - 1] = '\0';
-
-      char *token = strtok (length_copy, " \t");
-
-      while (token && num_lengths < 256)
-        {
-          ULONG duration = ParseTimeString (token);
-          if (duration > 0)
-            {
-              lengths[num_lengths] = duration + 1; /* +1 second buffer */
-              num_lengths++;
-            }
-          token = strtok (NULL, " \t");
-        }
-
-      if (num_lengths == 0)
-        {
-          continue;
-        }
-
-      /* Create database entry */
-      entry = AllocMem (sizeof (SongLengthEntry), MEMF_PUBLIC | MEMF_CLEAR);
-      if (!entry)
-        {
-          continue;
-        }
-
-      CopyMem (md5, entry->md5, MD5_HASH_SIZE);
-      entry->num_subsongs = num_lengths;
-      entry->lengths = AllocMem (sizeof (ULONG) * num_lengths, MEMF_PUBLIC);
-
-      if (!entry->lengths)
-        {
-          FreeMem (entry, sizeof (SongLengthEntry));
-          continue;
-        }
-
-      CopyMem (lengths, entry->lengths, sizeof (ULONG) * num_lengths);
-
-      /* Add to database */
-      entry->next = data->songlength_db;
-      data->songlength_db = entry;
-      count++;
-    }
-
-  Close (file);
-
-  char status_msg[256];
-  sprintf (status_msg, "Loaded %u song length entries (+1 sec buffer)",
-           (unsigned int)count);
-  UpdateStatus (data, status_msg);
-
-  DPRINTF (
-      "Total entries loaded: %u (all durations include +1 second buffer)\n",
-      (unsigned int)count);
-  return TRUE;
-}
-/* Auto-load songlengths on startup */
-static void
-AutoLoadSongLengths (struct SIDPlayerData *data)
-{
-  char filepath[512];
-
-  DPRINTF ("=== AutoLoadSongLengths START ===\n");
-
-  if (CheckSongLengthsFile (filepath, sizeof (filepath)))
-    {
-      DPRINTF ("Auto-loading songlengths from: %s\n", filepath);
-
-      UpdateStatus (data, "Auto-loading songlengths database...");
-
-      /* Disable the Load Songlengths button temporarily */
-      set (data->btn_load_songlengths, MUIA_Disabled, TRUE);
-      set (data->btn_load_songlengths, MUIA_Text_Contents, "Loading...");
-
-      if (LoadSongLengthsWithProgress (data, filepath))
-        {
-          /* Update any existing playlist entries */
-          if (data->playlist_count > 0)
-            {
-              UpdateStatus (data, "Updating playlist with song lengths...");
-
-              PlaylistEntry *entry = data->playlist_head;
-              ULONG updated = 0;
-              ULONG entry_num = 0;
-
-              while (entry)
-                {
-                  entry_num++;
-
-                  /* Update progress every 10 entries */
-                  if ((entry_num % 10) == 0)
-                    {
-                      char progress_msg[256];
-                      sprintf (progress_msg, "Updating playlist... %lu/%lu",
-                               (unsigned long)entry_num,
-                               (unsigned long)data->playlist_count);
-                      UpdateStatus (data, progress_msg);
-
-                      /* Process MUI events */
-                      ULONG signals;
-                      DoMethod (data->app, MUIM_Application_Input, &signals);
-                    }
-
-                  /* Check if we have this SID in database */
-                  SongLengthEntry *db_entry = data->songlength_db;
-
-                  while (db_entry)
-                    {
-                      if (MD5Compare (db_entry->md5, entry->md5))
-                        {
-                          UWORD old_subsongs = entry->subsongs;
-
-                          if (db_entry->num_subsongs > old_subsongs
-                              && db_entry->num_subsongs <= 256)
-                            {
-                              entry->subsongs = db_entry->num_subsongs;
-                              updated++;
-                              DPRINTF ("Updated %s: %d -> %d subsongs\n",
-                                       FilePart (entry->filename),
-                                       old_subsongs, entry->subsongs);
-                            }
-
-                          /* Update duration for current subsong */
-                          entry->duration = FindSongLength (
-                              data, entry->md5, entry->current_subsong);
-                          break;
-                        }
-                      db_entry = db_entry->next;
-                    }
-
-                  entry = entry->next;
-                }
-
-              /* Update display */
-              UpdatePlaylistDisplay (data);
-              if (data->current_entry)
-                {
-                  UpdateCurrentSongCache (data);
-                  UpdateCurrentSongDisplay (data);
-                }
-
-              char final_msg[256];
-              sprintf (final_msg,
-                       "Database loaded. Updated %lu of %lu playlist entries",
-                       (unsigned long)updated,
-                       (unsigned long)data->playlist_count);
-              UpdateStatus (data, final_msg);
-            }
-          else
-            {
-              UpdateStatus (data, "Songlengths database loaded successfully");
-            }
-        }
-
-      /* Re-enable the button */
-      set (data->btn_load_songlengths, MUIA_Disabled, FALSE);
-      set (data->btn_load_songlengths, MUIA_Text_Contents, "Load Songlengths");
-    }
-  else
-    {
-      DPRINTF ("No songlengths file found in program directory\n");
-      UpdateStatus (data, "Ready - No songlengths database found");
-    }
-
-  DPRINTF ("=== AutoLoadSongLengths END ===\n");
-}
-
-static BOOL
-WriteEnvVar (CONST_STRPTR var_name, CONST_STRPTR value, BOOL persistent)
-{
-  LONG result;
-  ULONG flags = GVF_GLOBAL_ONLY;
-
-  if (!var_name || !value)
-    {
-      return FALSE;
-    }
-
-  result = SetVar ((STRPTR)var_name, (STRPTR)value, strlen (value), flags);
-
-  if (result && persistent)
-    {
-      BPTR file;
-      STRPTR envarc_path;
-      ULONG path_len = strlen ("ENVARC:") + strlen (var_name) + 1;
-
-      envarc_path = AllocMem (path_len, MEMF_PUBLIC);
-      if (envarc_path)
-        {
-          strcpy (envarc_path, "ENVARC:");
-          strcat (envarc_path, var_name);
-
-          STRPTR dir_end = strrchr (envarc_path, '/');
-          if (dir_end)
-            {
-              *dir_end = '\0';
-              CreateDir (envarc_path);
-              *dir_end = '/';
-            }
-
-          file = Open (envarc_path, MODE_NEWFILE);
-          if (file)
-            {
-              Write (file, (STRPTR)value, strlen (value));
-              Close (file);
-            }
-
-          FreeMem (envarc_path, path_len);
-        }
-    }
-
-  return result ? TRUE : FALSE;
-}
-
-/* Load SID directory preference */
-static void
-LoadSidDirectoryPref (struct SIDPlayerData *data)
-{
-  STRPTR env_dir;
-
-  env_dir = ReadEnvVar (ENV_ULTIMATE64_SID_DIR);
-  if (env_dir)
-    {
-      strncpy (data->last_sid_dir, env_dir, sizeof (data->last_sid_dir) - 1);
-      data->last_sid_dir[sizeof (data->last_sid_dir) - 1] = '\0';
-      FreeMem (env_dir, strlen (env_dir) + 1);
-      DPRINTF ("Loaded SID directory: %s\n", data->last_sid_dir);
-    }
-  else
-    {
-      strcpy (data->last_sid_dir, "");
-    }
-}
-
-/* Save SID directory preference */
-static void
-SaveSidDirectoryPref (struct SIDPlayerData *data)
-{
-  if (strlen (data->last_sid_dir) > 0)
-    {
-      WriteEnvVar (ENV_ULTIMATE64_SID_DIR, data->last_sid_dir, TRUE);
-      DPRINTF ("Saved SID directory: %s\n", data->last_sid_dir);
-    }
-}
-
-/* Load file into memory */
-static UBYTE *
-LoadFile (CONST_STRPTR filename, ULONG *size)
-{
-  BPTR file;
-  LONG file_size;
-  UBYTE *buffer;
-
-  file = Open (filename, MODE_OLDFILE);
-  if (!file)
-    {
-      return NULL;
-    }
-
-  Seek (file, 0, OFFSET_END);
-  file_size = Seek (file, 0, OFFSET_BEGINNING);
-
-  if (file_size <= 0)
-    {
-      Close (file);
-      return NULL;
-    }
-
-  buffer = AllocMem (file_size, MEMF_PUBLIC);
-  if (!buffer)
-    {
-      Close (file);
-      return NULL;
-    }
-
-  if (Read (file, buffer, file_size) != file_size)
-    {
-      FreeMem (buffer, file_size);
-      Close (file);
-      return NULL;
-    }
-
-  Close (file);
-
-  if (size)
+    *data = buffer;
     *size = file_size;
-  return buffer;
+    return TRUE;
 }
 
-/* Update status text */
-static void
-UpdateStatus (struct SIDPlayerData *data, CONST_STRPTR text)
+/* SID file parsing functions */
+static UWORD ParseSIDSubsongs(const UBYTE *data, ULONG size)
 {
-  set (data->txt_status, MUIA_Text_Contents, text);
+    if (size < 0x7E || memcmp(data, "PSID", 4) != 0) {
+        return 1; // Default to 1 subsong
+    }
+
+    UWORD songs = (data[14] << 8) | data[15];
+    return (songs > 0) ? songs : 1;
 }
 
-/* Check if configuration is complete */
-static BOOL
-IsConfigurationComplete (struct SIDPlayerData *data)
+static STRPTR ExtractSIDTitle(const UBYTE *data, ULONG size)
 {
-  /* Configuration is complete if we have a host address */
-  return (strlen (data->host) > 0);
+    if (size < 0x7E || memcmp(data, "PSID", 4) != 0) {
+        return NULL;
+    }
+
+    // Title is at offset 0x16, 32 bytes
+    char title[33];
+    CopyMem((APTR)(data + 0x16), title, 32);
+    title[32] = '\0';
+
+    // Remove trailing spaces and nulls
+    int i;
+    for (i = 31; i >= 0 && (title[i] == ' ' || title[i] == '\0'); i--) {
+        title[i] = '\0';
+    }
+
+    if (strlen(title) == 0) {
+        return NULL;
+    }
+
+    return SafeStrDup(title);
 }
 
-/* Modified DoConnect to check for configuration */
-static void
-DoConnect (struct SIDPlayerData *data)
+static ULONG ParseTimeString(const char *time_str)
 {
-  if (data->connection)
-    {
-      /* Disconnect */
-      if (data->state == PLAYER_PLAYING)
-        {
-          data->state = PLAYER_STOPPED;
-        }
+    char *colon_pos;
+    ULONG minutes = 0;
+    ULONG seconds = 0;
+    char temp_str[32];
 
-      U64_Disconnect (data->connection);
-      data->connection = NULL;
-
-      set (data->txt_connection_status, MUIA_Text_Contents, "Disconnected");
-      set (data->btn_connect, MUIA_Text_Contents, "Connect");
-      UpdateStatus (data, "Disconnected");
-
-      /* Disable controls */
-      set (data->btn_play, MUIA_Disabled, TRUE);
-      set (data->btn_stop, MUIA_Disabled, TRUE);
-      set (data->btn_next, MUIA_Disabled, TRUE);
-      set (data->btn_prev, MUIA_Disabled, TRUE);
+    if (!time_str || strlen(time_str) == 0) {
+        return 0;
     }
-  else
-    {
-      /* Check if configuration is complete before connecting */
-      if (!IsConfigurationComplete (data))
-        {
-          UpdateStatus (data, "Please configure connection settings first");
-          OpenConfigWindow (data);
-          return;
-        }
 
-      /* Connect */
-      data->connection = U64_Connect (
-          (CONST_STRPTR)data->host,
-          strlen (data->password) > 0 ? (CONST_STRPTR)data->password : NULL);
+    /* Make a copy to work with */
+    strncpy(temp_str, time_str, sizeof(temp_str) - 1);
+    temp_str[sizeof(temp_str) - 1] = '\0';
 
-      if (data->connection)
-        {
-          U64DeviceInfo info;
-          char status[256];
-
-          sprintf (status, "Connected to %s", data->host);
-          set (data->txt_connection_status, MUIA_Text_Contents, "Connected");
-          set (data->btn_connect, MUIA_Text_Contents, "Disconnect");
-          UpdateStatus (data, status);
-
-          /* Try to get device info */
-          if (U64_GetDeviceInfo (data->connection, &info) == U64_OK)
-            {
-              sprintf (status, "Device: %s (firmware %s)",
-                       info.product_name ? (char *)info.product_name
-                                         : "Ultimate",
-                       info.firmware_version ? (char *)info.firmware_version
-                                             : "unknown");
-              UpdateStatus (data, status);
-              U64_FreeDeviceInfo (&info);
-            }
-
-          /* Enable controls */
-          set (data->btn_play, MUIA_Disabled, FALSE);
-          set (data->btn_stop, MUIA_Disabled, FALSE);
-          set (data->btn_next, MUIA_Disabled, FALSE);
-          set (data->btn_prev, MUIA_Disabled, FALSE);
-        }
-      else
-        {
-          set (data->txt_connection_status, MUIA_Text_Contents,
-               "Disconnected");
-          UpdateStatus (data, "Connection failed");
-        }
+    /* Find colon separator */
+    colon_pos = strchr(temp_str, ':');
+    if (!colon_pos) {
+        /* No colon, treat as seconds only */
+        return (ULONG)atoi(temp_str);
     }
+
+    /* Split at colon */
+    *colon_pos = '\0';
+    minutes = (ULONG)atoi(temp_str);
+
+    /* Parse seconds part */
+    char *seconds_str = colon_pos + 1;
+    char *dot_pos = strchr(seconds_str, '.');
+    if (dot_pos) {
+        *dot_pos = '\0'; /* Ignore milliseconds */
+    }
+
+    seconds = (ULONG)atoi(seconds_str);
+
+    /* Convert to total seconds */
+    return (minutes * 60) + seconds;
 }
 
-/* Load configuration from environment */
-static void
-LoadConfig (struct SIDPlayerData *data)
+/* Song length database functions */
+static BOOL CheckSongLengthsFile(char *filepath, ULONG filepath_size)
 {
-  STRPTR env_host, env_password;
-
-  env_host = ReadEnvVar (ENV_ULTIMATE64_HOST);
-  if (env_host)
-    {
-      strcpy (data->host, env_host);
-      FreeMem (env_host, strlen (env_host) + 1);
-    }
-  else
-    {
-      /* No default IP address - leave empty */
-      data->host[0] = '\0';
-    }
-
-  env_password = ReadEnvVar (ENV_ULTIMATE64_PASSWORD);
-  if (env_password)
-    {
-      strcpy (data->password, env_password);
-      FreeMem (env_password, strlen (env_password) + 1);
-    }
-  else
-    {
-      data->password[0] = '\0';
-    }
-
-  /* Load SID directory preference */
-  LoadSidDirectoryPref (data);
-}
-/* Save configuration to environment */
-static void
-SaveConfig (struct SIDPlayerData *data)
-{
-  WriteEnvVar (ENV_ULTIMATE64_HOST, (CONST_STRPTR)data->host, TRUE);
-  if (strlen (data->password) > 0)
-    {
-      WriteEnvVar (ENV_ULTIMATE64_PASSWORD, (CONST_STRPTR)data->password,
-                   TRUE);
-    }
-  else
-    {
-      DeleteVar (ENV_ULTIMATE64_PASSWORD, GVF_GLOBAL_ONLY);
-      DeleteFile ("ENVARC:" ENV_ULTIMATE64_PASSWORD);
-    }
-  UpdateStatus (data, (CONST_STRPTR) "Configuration saved");
-}
-
-/* Free playlist */
-static void
-FreePlaylist (struct SIDPlayerData *data)
-{
-  PlaylistEntry *entry = data->playlist_head;
-  PlaylistEntry *next;
-
-  /* Clear the MUI list first to free any stored strings */
-  if (data->playlist_list)
-    {
-      set (data->playlist_list, MUIA_List_Quiet, TRUE);
-      DoMethod (data->playlist_list, MUIM_List_Clear);
-      set (data->playlist_list, MUIA_List_Quiet, FALSE);
-    }
-
-  while (entry)
-    {
-      next = entry->next;
-
-      if (entry->filename)
-        {
-          FreeMem (entry->filename, strlen (entry->filename) + 1);
-        }
-      if (entry->title)
-        {
-          FreeMem (entry->title, strlen (entry->title) + 1);
-        }
-
-      FreeMem (entry, sizeof (PlaylistEntry));
-      entry = next;
-    }
-
-  data->playlist_head = NULL;
-  data->current_entry = NULL;
-  data->playlist_count = 0;
-  data->current_index = 0;
-}
-
-/* Free song length database */
-static void
-FreeSongLengthDB (struct SIDPlayerData *data)
-{
-  SongLengthEntry *entry = data->songlength_db;
-  SongLengthEntry *next;
-
-  while (entry)
-    {
-      next = entry->next;
-
-      if (entry->lengths)
-        {
-          FreeMem (entry->lengths, sizeof (ULONG) * entry->num_subsongs);
-        }
-
-      FreeMem (entry, sizeof (SongLengthEntry));
-      entry = next;
-    }
-
-  data->songlength_db = NULL;
-}
-
-/* Parse SID file header to get number of subsongs */
-static UWORD
-ParseSIDSubsongs (const UBYTE *data, ULONG size)
-{
-  if (size < 0x7E || memcmp (data, "PSID", 4) != 0)
-    {
-      return 1; // Default to 1 subsong
-    }
-
-  UWORD songs = (data[14] << 8) | data[15];
-  return (songs > 0) ? songs : 1;
-}
-
-/* Extract title from SID file */
-static STRPTR
-ExtractSIDTitle (const UBYTE *data, ULONG size)
-{
-  if (size < 0x7E || memcmp (data, "PSID", 4) != 0)
-    {
-      return NULL;
-    }
-
-  // Title is at offset 0x16, 32 bytes
-  char title[33];
-  CopyMem ((APTR)(data + 0x16), title, 32);
-  title[32] = '\0';
-
-  // Remove trailing spaces and nulls
-  int i;
-  for (i = 31; i >= 0 && (title[i] == ' ' || title[i] == '\0'); i--)
-    {
-      title[i] = '\0';
-    }
-
-  if (strlen (title) == 0)
-    {
-      return NULL;
-    }
-
-  STRPTR result = AllocMem (strlen (title) + 1, MEMF_PUBLIC);
-  if (result)
-    {
-      strcpy (result, title);
-    }
-
-  return result;
-}
-
-/* Find song length in database */
-static ULONG
-FindSongLength (struct SIDPlayerData *data, const UBYTE md5[MD5_HASH_SIZE],
-                UWORD subsong)
-{
-  SongLengthEntry *entry = data->songlength_db;
-
-  while (entry)
-    {
-      if (MD5Compare (entry->md5, md5))
-        {
-          if (subsong < entry->num_subsongs)
-            {
-              /* Add 1 second buffer to prevent premature song ending */
-              return entry->lengths[subsong] + 1;
-            }
-          break;
-        }
-      entry = entry->next;
-    }
-
-  /* Add 1 second to default length too */
-  return DEFAULT_SONG_LENGTH + 1;
-}
-
-/* Add playlist entry - FIXED to use songlength database for subsong count */
-static BOOL
-AddPlaylistEntry (struct SIDPlayerData *data, CONST_STRPTR filename)
-{
-  UBYTE *file_data;
-  ULONG file_size;
-  PlaylistEntry *entry;
-  PlaylistEntry *last;
-
-  /* Load file to calculate MD5 and parse header */
-  file_data = LoadFile (filename, &file_size);
-  if (!file_data)
-    {
-      return FALSE;
-    }
-
-  /* Create new entry */
-  entry = AllocMem (sizeof (PlaylistEntry), MEMF_PUBLIC | MEMF_CLEAR);
-  if (!entry)
-    {
-      FreeMem (file_data, file_size);
-      return FALSE;
-    }
-
-  /* Copy filename */
-  entry->filename = AllocMem (strlen (filename) + 1, MEMF_PUBLIC);
-  if (!entry->filename)
-    {
-      FreeMem (entry, sizeof (PlaylistEntry));
-      FreeMem (file_data, file_size);
-      return FALSE;
-    }
-  strcpy (entry->filename, filename);
-
-  /* Calculate MD5 */
-  CalculateMD5 (file_data, file_size, entry->md5);
-
-  /* Parse SID header for basic subsong count */
-  UWORD header_subsongs = ParseSIDSubsongs (file_data, file_size);
-
-  /* CRITICAL FIX: Initialize with header value first */
-  entry->subsongs = header_subsongs;
-  entry->current_subsong = 0; /* Always start with subsong 0 (first subsong) */
-
-  DPRINTF ("AddPlaylistEntry: Initial values - subsongs=%d, current=%d\n",
-           entry->subsongs, entry->current_subsong);
-
-  /* Check if we have this SID in our songlength database */
-  if (data->songlength_db)
-    {
-      SongLengthEntry *db_entry = data->songlength_db;
-
-      while (db_entry)
-        {
-          if (MD5Compare (db_entry->md5, entry->md5))
-            {
-              DPRINTF ("Found %s in database: %d subsongs (header said %d)\n",
-                       FilePart (filename), db_entry->num_subsongs,
-                       header_subsongs);
-
-              /* Use database value if it's larger and reasonable */
-              if (db_entry->num_subsongs > header_subsongs
-                  && db_entry->num_subsongs <= 256)
-                {
-                  entry->subsongs = db_entry->num_subsongs;
-                }
-              break;
-            }
-          db_entry = db_entry->next;
-        }
-    }
-
-  /* Extract title */
-  entry->title = ExtractSIDTitle (file_data, file_size);
-  if (!entry->title)
-    {
-      /* Use filename as title */
-      STRPTR basename = FilePart (filename);
-      entry->title = AllocMem (strlen (basename) + 1, MEMF_PUBLIC);
-      if (entry->title)
-        {
-          strcpy (entry->title, basename);
-        }
-    }
-
-  /* Find song length for the first subsong (subsong 0) */
-  entry->duration = FindSongLength (data, entry->md5, 0);
-  if (entry->duration == 0)
-    {
-      entry->duration = DEFAULT_SONG_LENGTH;
-    }
-
-  DPRINTF ("Final entry values: subsongs=%d, current=%d, duration=%d\n",
-           entry->subsongs, entry->current_subsong, (int)entry->duration);
-
-  FreeMem (file_data, file_size);
-
-  /* Add to playlist */
-  if (!data->playlist_head)
-    {
-      data->playlist_head = entry;
-    }
-  else
-    {
-      last = data->playlist_head;
-      while (last->next)
-        {
-          last = last->next;
-        }
-      last->next = entry;
-    }
-
-  data->playlist_count++;
-  return TRUE;
-}
-
-/* Parse time string (MM:SS or SS) */
-static ULONG
-ParseTimeString (const char *time_str)
-{
-  char *colon_pos;
-  char *dot_pos;
-  ULONG minutes = 0;
-  ULONG seconds = 0;
-  char temp_str[32];
-
-  if (!time_str || strlen (time_str) == 0)
-    {
-      return 0;
-    }
-
-  /* Make a copy to work with */
-  strncpy (temp_str, time_str, sizeof (temp_str) - 1);
-  temp_str[sizeof (temp_str) - 1] = '\0';
-
-  /* Find colon separator */
-  colon_pos = strchr (temp_str, ':');
-  if (!colon_pos)
-    {
-      /* No colon, treat as seconds only */
-      return (ULONG)atoi (temp_str);
-    }
-
-  /* Split at colon */
-  *colon_pos = '\0';
-  minutes = (ULONG)atoi (temp_str);
-
-  /* Parse seconds part (may have decimal) */
-  char *seconds_str = colon_pos + 1;
-  dot_pos = strchr (seconds_str, '.');
-  if (dot_pos)
-    {
-      *dot_pos = '\0'; /* Ignore milliseconds for now */
-    }
-
-  seconds = (ULONG)atoi (seconds_str);
-
-  /* Convert to total seconds */
-  return (minutes * 60) + seconds;
-}
-
-static void
-UpdatePlaylistDisplay (struct SIDPlayerData *data)
-{
-  PlaylistEntry *entry;
-  ULONG i;
-
-  DPRINTF ("=== UpdatePlaylistDisplay FIXED START ===\n");
-
-  /* Clear list first */
-  set (data->playlist_list, MUIA_List_Quiet, TRUE);
-  DoMethod (data->playlist_list, MUIM_List_Clear);
-
-  if (data->playlist_count == 0)
-    {
-      set (data->playlist_list, MUIA_List_Quiet, FALSE);
-      DPRINTF ("Playlist is empty\n");
-      return;
-    }
-
-  /* Add entries one by one to the list */
-  entry = data->playlist_head;
-  for (i = 0; i < data->playlist_count && entry; i++)
-    {
-      char *basename = FilePart (entry->filename);
-
-      DPRINTF ("=== PROCESSING ENTRY %d ===\n", (int)i);
-      DPRINTF ("Entry address: %p\n", entry);
-      DPRINTF ("Filename: %s\n", basename);
-
-      /* Read values safely into local int variables */
-      int entry_subsongs = (int)entry->subsongs;
-      int entry_current = (int)entry->current_subsong;
-      int entry_duration = (int)entry->duration;
-
-      DPRINTF ("Raw entry values: subsongs=%d, current=%d, duration=%d\n",
-               entry_subsongs, entry_current, entry_duration);
-
-      /* Validate values */
-      if (entry_subsongs <= 0)
-        {
-          entry_subsongs = 1;
-          DPRINTF ("WARNING: Fixed subsongs to 1\n");
-        }
-      if (entry_current < 0 || entry_current >= entry_subsongs)
-        {
-          entry_current = 0;
-          DPRINTF ("WARNING: Fixed current subsong to 0\n");
-        }
-
-      /* Remove .sid extension for cleaner display */
-      char clean_name[256];
-      strncpy (clean_name, basename, sizeof (clean_name) - 1);
-      clean_name[sizeof (clean_name) - 1] = '\0';
-      char *dot = strrchr (clean_name, '.');
-      if (dot && stricmp (dot, ".sid") == 0)
-        {
-          *dot = '\0';
-        }
-
-      /* Use title if available, otherwise use cleaned filename */
-      char *display_name;
-      if (entry->title && strlen (entry->title) > 0)
-        {
-          display_name = entry->title;
-        }
-      else
-        {
-          display_name = clean_name;
-        }
-
-      /* Allocate display string on heap */
-      STRPTR list_string = AllocMem (512, MEMF_PUBLIC | MEMF_CLEAR);
-      if (!list_string)
-        {
-          DPRINTF ("ERROR: Failed to allocate display string\n");
-          entry = entry->next;
-          continue;
-        }
-
-      /* Build display string manually without sprintf */
-      strcpy (list_string, display_name);
-
-      if (entry_subsongs > 1)
-        {
-          /* Add subsong info: " [1/12]" */
-          strcat (list_string, " [");
-
-          /* Add current subsong number (1-based) */
-          int display_current = entry_current + 1;
-          if (display_current < 10)
-            {
-              char c = '0' + display_current;
-              strncat (list_string, &c, 1);
-            }
-          else if (display_current < 100)
-            {
-              char temp[3];
-              temp[0] = '0' + (display_current / 10);
-              temp[1] = '0' + (display_current % 10);
-              temp[2] = '\0';
-              strcat (list_string, temp);
-            }
-          else
-            {
-              strcat (list_string, "99+"); /* Fallback for very high numbers */
-            }
-
-          strcat (list_string, "/");
-
-          /* Add total subsongs */
-          if (entry_subsongs < 10)
-            {
-              char c = '0' + entry_subsongs;
-              strncat (list_string, &c, 1);
-            }
-          else if (entry_subsongs < 100)
-            {
-              char temp[3];
-              temp[0] = '0' + (entry_subsongs / 10);
-              temp[1] = '0' + (entry_subsongs % 10);
-              temp[2] = '\0';
-              strcat (list_string, temp);
-            }
-          else
-            {
-              strcat (list_string, "99+"); /* Fallback */
-            }
-
-          strcat (list_string, "] ");
-
-          /* Get duration for current subsong */
-          ULONG current_duration
-              = FindSongLength (data, entry->md5, entry_current);
-          if (current_duration == 0)
-            {
-              current_duration = (ULONG)entry_duration;
-              if (current_duration == 0)
-                {
-                  current_duration = DEFAULT_SONG_LENGTH;
+    BPTR lock;
+    char progdir[256];
+    BOOL found = FALSE;
+
+    /* Get program directory */
+    lock = GetProgramDir();
+    if (lock) {
+        if (NameFromLock(lock, progdir, sizeof(progdir))) {
+            /* Try common filename variations */
+            const char *filenames[] = {
+                "Songlengths.md5", "songlengths.md5", "SONGLENGTHS.MD5",
+                "Songlengths.txt", "songlengths.txt", NULL
+            };
+
+            int i;
+            for (i = 0; filenames[i]; i++) {
+                strncpy(filepath, progdir, filepath_size - 1);
+                filepath[filepath_size - 1] = '\0';
+                AddPart(filepath, filenames[i], filepath_size);
+
+                BPTR file = Open(filepath, MODE_OLDFILE);
+                if (file) {
+                    Close(file);
+                    U64_DEBUG("Found songlengths file: %s", filepath);
+                    found = TRUE;
+                    break;
                 }
             }
-
-          /* Add time manually */
-          int minutes = (int)(current_duration / 60);
-          int seconds = (int)(current_duration % 60);
-
-          /* Add minutes */
-          if (minutes < 10)
-            {
-              char c = '0' + minutes;
-              strncat (list_string, &c, 1);
-            }
-          else
-            {
-              char temp[3];
-              temp[0] = '0' + (minutes / 10);
-              temp[1] = '0' + (minutes % 10);
-              temp[2] = '\0';
-              strcat (list_string, temp);
-            }
-
-          strcat (list_string, ":");
-
-          /* Add seconds (always 2 digits) */
-          char temp[3];
-          temp[0] = '0' + (seconds / 10);
-          temp[1] = '0' + (seconds % 10);
-          temp[2] = '\0';
-          strcat (list_string, temp);
         }
-      else
-        {
-          /* Single subsong: show just time */
-          ULONG duration = (ULONG)entry_duration;
-          if (duration == 0)
-            {
-              duration = FindSongLength (data, entry->md5, 0);
-              if (duration == 0)
-                {
-                  duration = DEFAULT_SONG_LENGTH;
+    }
+
+    if (!found) {
+        /* Also try current directory */
+        const char *filenames[] = {
+            "Songlengths.md5", "songlengths.md5", "SONGLENGTHS.MD5", NULL
+        };
+
+        int i;
+        for (i = 0; filenames[i]; i++) {
+            BPTR file = Open(filenames[i], MODE_OLDFILE);
+            if (file) {
+                Close(file);
+                strcpy(filepath, filenames[i]);
+                U64_DEBUG("Found songlengths file in current dir: %s", filepath);
+                found = TRUE;
+                break;
+            }
+        }
+    }
+
+    return found;
+}
+
+/* Load song lengths database with progress feedback */
+static BOOL
+LoadSongLengthsWithProgress(struct ObjApp *obj, CONST_STRPTR filename)
+{
+    BPTR file;
+    char line[1024];
+    SongLengthEntry *entry;
+    ULONG count = 0;
+    ULONG line_count = 0;
+    ULONG processed_lines = 0;
+
+    file = Open(filename, MODE_OLDFILE);
+    if (!file) {
+        APP_UpdateStatus("Cannot open songlengths file");
+        return FALSE;
+    }
+
+    /* First pass: count total lines for progress */
+    APP_UpdateStatus("Analyzing songlengths database...");
+    while (FGets(file, line, sizeof(line))) {
+        line_count++;
+        if ((line_count % 1000) == 0) {
+            /* Build progress message manually */
+            static char progress_msg[256];
+            strcpy(progress_msg, "Analyzing... ");
+            
+            /* Convert line_count to string manually */
+            char count_str[32];
+            ULONG temp_count = line_count;
+            int pos = 0;
+            
+            if (temp_count == 0) {
+                count_str[0] = '0';
+                pos = 1;
+            } else {
+                char digits[16];
+                int digit_pos = 0;
+                
+                while (temp_count > 0) {
+                    digits[digit_pos++] = '0' + (temp_count % 10);
+                    temp_count /= 10;
+                }
+                
+                /* Reverse digits */
+                for (int i = digit_pos - 1; i >= 0; i--) {
+                    count_str[pos++] = digits[i];
                 }
             }
+            count_str[pos] = '\0';
+            
+            strcat(progress_msg, count_str);
+            strcat(progress_msg, " lines");
+            APP_UpdateStatus(progress_msg);
 
-          strcat (list_string, " - ");
-
-          /* Add time manually */
-          int minutes = (int)(duration / 60);
-          int seconds = (int)(duration % 60);
-
-          /* Add minutes */
-          if (minutes < 10)
-            {
-              char c = '0' + minutes;
-              strncat (list_string, &c, 1);
-            }
-          else
-            {
-              char temp[3];
-              temp[0] = '0' + (minutes / 10);
-              temp[1] = '0' + (minutes % 10);
-              temp[2] = '\0';
-              strcat (list_string, temp);
-            }
-
-          strcat (list_string, ":");
-
-          /* Add seconds (always 2 digits) */
-          char temp[3];
-          temp[0] = '0' + (seconds / 10);
-          temp[1] = '0' + (seconds % 10);
-          temp[2] = '\0';
-          strcat (list_string, temp);
-        }
-
-      DPRINTF ("Final display string: '%s'\n", list_string);
-
-      /* Add to MUI list */
-      DoMethod (data->playlist_list, MUIM_List_InsertSingle, list_string,
-                MUIV_List_Insert_Bottom);
-
-      DPRINTF ("=== END ENTRY %d ===\n", (int)i);
-      entry = entry->next;
-    }
-
-  set (data->playlist_list, MUIA_List_Quiet, FALSE);
-
-  /* Highlight current entry */
-  if (data->current_entry)
-    {
-      set (data->playlist_list, MUIA_List_Active, data->current_index);
-    }
-
-  DPRINTF ("=== UpdatePlaylistDisplay FIXED END ===\n");
-}
-
-/* Load song lengths database */
-/* Load song lengths database - FIXED to add 1 second to each duration */
-static BOOL
-LoadSongLengths (struct SIDPlayerData *data, CONST_STRPTR filename)
-{
-  BPTR file;
-  char line[1024];
-  SongLengthEntry *entry;
-  ULONG count = 0;
-
-  file = Open (filename, MODE_OLDFILE);
-  if (!file)
-    {
-      UpdateStatus (data, "Cannot open songlengths file");
-      return FALSE;
-    }
-
-  /* Free existing database */
-  FreeSongLengthDB (data);
-
-  UpdateStatus (data, "Loading song lengths database...");
-
-  while (FGets (file, line, sizeof (line)))
-    {
-      char *md5_str, *length_str, *pos;
-      UBYTE md5[MD5_HASH_SIZE];
-      char *newline;
-
-      /* Remove trailing newline */
-      newline = strchr (line, '\n');
-      if (newline)
-        *newline = '\0';
-      newline = strchr (line, '\r');
-      if (newline)
-        *newline = '\0';
-
-      /* Skip empty lines and comments */
-      if (line[0] == '\0' || line[0] == '#' || line[0] == ';')
-        {
-          continue;
-        }
-
-      /* Find the '=' separator */
-      pos = strchr (line, '=');
-      if (!pos)
-        {
-          continue;
-        }
-
-      *pos = '\0';
-      md5_str = line;
-      length_str = pos + 1;
-
-      /* Validate MD5 string length */
-      if (strlen (md5_str) != 32)
-        {
-          DPRINTF ("Invalid MD5 length: %s (%d chars)\n", md5_str,
-                   (int)strlen (md5_str));
-          continue;
-        }
-
-      /* Parse MD5 */
-      if (!HexStringToMD5 (md5_str, md5))
-        {
-          DPRINTF ("Invalid MD5 format: %s\n", md5_str);
-          continue;
-        }
-
-      /* Parse lengths (format: "MM:SS MM:SS MM:SS.mmm...") */
-      ULONG lengths[256]; /* Max subsongs */
-      UWORD num_lengths = 0;
-
-      /* Make a copy of length_str for strtok */
-      char length_copy[512];
-      strncpy (length_copy, length_str, sizeof (length_copy) - 1);
-      length_copy[sizeof (length_copy) - 1] = '\0';
-
-      char *token = strtok (length_copy, " \t");
-
-      while (token && num_lengths < 256)
-        {
-          ULONG duration = ParseTimeString (token);
-          if (duration > 0)
-            {
-              /* Add 1 second buffer to each song length */
-              lengths[num_lengths] = duration + 1;
-              num_lengths++;
-            }
-          token = strtok (NULL, " \t");
-        }
-
-      if (num_lengths == 0)
-        {
-          DPRINTF ("No valid durations found for MD5: %s\n", md5_str);
-          continue;
-        }
-
-      /* Create database entry */
-      entry = AllocMem (sizeof (SongLengthEntry), MEMF_PUBLIC | MEMF_CLEAR);
-      if (!entry)
-        {
-          continue;
-        }
-
-      CopyMem (md5, entry->md5, MD5_HASH_SIZE);
-      entry->num_subsongs = num_lengths;
-      entry->lengths = AllocMem (sizeof (ULONG) * num_lengths, MEMF_PUBLIC);
-
-      if (!entry->lengths)
-        {
-          FreeMem (entry, sizeof (SongLengthEntry));
-          continue;
-        }
-
-      CopyMem (lengths, entry->lengths, sizeof (ULONG) * num_lengths);
-
-      /* Add to database */
-      entry->next = data->songlength_db;
-      data->songlength_db = entry;
-      count++;
-
-      /* Debug output for validation */
-      if (count <= 5)
-        {
-          char md5_debug[33];
-          MD5ToHexString (entry->md5, md5_debug);
-          DPRINTF ("Loaded: %s = %d subsongs (each +1 sec)", md5_debug,
-                   num_lengths);
-          if (strstr (md5_debug, "99fe6cdd155e30c198a3bb84977ef894"))
-            {
-              DPRINTF (" (RAMBO)");
-            }
-          DPRINTF ("\n");
+            /* Process MUI events to keep interface responsive */
+            ULONG signals;
+            DoMethod(obj->App, MUIM_Application_Input, &signals);
         }
     }
 
-  Close (file);
-
-  char status_msg[256];
-  sprintf (status_msg, "Loaded %u song length entries (+1 sec buffer)",
-           (unsigned int)count);
-  UpdateStatus (data, status_msg);
-
-  DPRINTF (
-      "Total entries loaded: %u (all durations include +1 second buffer)\n",
-      (unsigned int)count);
-  return TRUE;
-}
-
-static void
-UpdateCurrentSongDisplay (struct SIDPlayerData *data)
-{
-  char song_str[256];
-
-  DPRINTF ("=== UpdateCurrentSongDisplay FIXED TIME START ===\n");
-
-  if (!data->current_entry || !current_song_cache.cache_valid)
-    {
-      set (data->txt_current_song, MUIA_Text_Contents, "No song loaded");
-      set (data->txt_current_time, MUIA_Text_Contents, "0:00");
-      set (data->txt_total_time, MUIA_Text_Contents, "0:00");
-      set (data->txt_subsong_info, MUIA_Text_Contents, "");
-      set (data->progress_gauge, MUIA_Gauge_Current, 0);
-      return;
-    }
-
-  /* Use cached values */
-  int subsongs = (int)current_song_cache.cached_subsongs;
-  int current = (int)current_song_cache.cached_current;
-
-  DPRINTF ("Values: subsongs=%d, current=%d\n", subsongs, current);
-  DPRINTF ("Times: current_time=%lu, total_time=%lu\n",
-           (unsigned long)data->current_time, (unsigned long)data->total_time);
-
-  /* Song title */
-  if (current_song_cache.cached_title[0] != '\0')
-    {
-      strcpy (song_str, current_song_cache.cached_title);
-    }
-  else
-    {
-      char *basename = FilePart (current_song_cache.cached_filename);
-      strcpy (song_str, basename);
-      char *dot = strrchr (song_str, '.');
-      if (dot && stricmp (dot, ".sid") == 0)
-        {
-          *dot = '\0';
-        }
-    }
-  set (data->txt_current_song, MUIA_Text_Contents, song_str);
-
-  /* CRITICAL FIX: Build time strings manually to avoid sprintf issues */
-
-  /* Current time string */
-  static char current_time_str[16];
-  current_time_str[0] = '\0';
-
-  int current_minutes = (int)(data->current_time / 60);
-  int current_seconds = (int)(data->current_time % 60);
-
-  /* Build current time manually */
-  if (current_minutes < 10)
-    {
-      char c = '0' + current_minutes;
-      strncat (current_time_str, &c, 1);
-    }
-  else
-    {
-      char temp[3];
-      temp[0] = '0' + (current_minutes / 10);
-      temp[1] = '0' + (current_minutes % 10);
-      temp[2] = '\0';
-      strcat (current_time_str, temp);
-    }
-
-  strcat (current_time_str, ":");
-
-  /* Add seconds (always 2 digits) */
-  char temp[3];
-  temp[0] = '0' + (current_seconds / 10);
-  temp[1] = '0' + (current_seconds % 10);
-  temp[2] = '\0';
-  strcat (current_time_str, temp);
-
-  DPRINTF ("Built current time string: '%s'\n", current_time_str);
-  set (data->txt_current_time, MUIA_Text_Contents, current_time_str);
-
-  /* Total time string */
-  static char total_time_str[16];
-  total_time_str[0] = '\0';
-
-  int total_minutes = (int)(data->total_time / 60);
-  int total_seconds = (int)(data->total_time % 60);
-
-  /* Build total time manually */
-  if (total_minutes < 10)
-    {
-      char c = '0' + total_minutes;
-      strncat (total_time_str, &c, 1);
-    }
-  else
-    {
-      char temp2[3];
-      temp2[0] = '0' + (total_minutes / 10);
-      temp2[1] = '0' + (total_minutes % 10);
-      temp2[2] = '\0';
-      strcat (total_time_str, temp2);
-    }
-
-  strcat (total_time_str, ":");
-
-  /* Add seconds (always 2 digits) */
-  char temp3[3];
-  temp3[0] = '0' + (total_seconds / 10);
-  temp3[1] = '0' + (total_seconds % 10);
-  temp3[2] = '\0';
-  strcat (total_time_str, temp3);
-
-  DPRINTF ("Built total time string: '%s'\n", total_time_str);
-  set (data->txt_total_time, MUIA_Text_Contents, total_time_str);
-
-  /* Subsong info - build manually */
-  if (subsongs > 1)
-    {
-      /* Use global string to avoid stack issues */
-      global_subsong_str[0] = '\0';
-
-      strcat (global_subsong_str, "Subsong ");
-
-      /* Add current subsong number (1-based) */
-      int display_current = current + 1;
-      if (display_current < 10)
-        {
-          char c = '0' + display_current;
-          strncat (global_subsong_str, &c, 1);
-        }
-      else if (display_current < 100)
-        {
-          char temp4[3];
-          temp4[0] = '0' + (display_current / 10);
-          temp4[1] = '0' + (display_current % 10);
-          temp4[2] = '\0';
-          strcat (global_subsong_str, temp4);
-        }
-
-      strcat (global_subsong_str, " of ");
-
-      /* Add total subsongs */
-      if (subsongs < 10)
-        {
-          char c = '0' + subsongs;
-          strncat (global_subsong_str, &c, 1);
-        }
-      else if (subsongs < 100)
-        {
-          char temp5[3];
-          temp5[0] = '0' + (subsongs / 10);
-          temp5[1] = '0' + (subsongs % 10);
-          temp5[2] = '\0';
-          strcat (global_subsong_str, temp5);
-        }
-
-      DPRINTF ("Built subsong string: '%s'\n", global_subsong_str);
-      set (data->txt_subsong_info, MUIA_Text_Contents, global_subsong_str);
-    }
-  else
-    {
-      set (data->txt_subsong_info, MUIA_Text_Contents, "");
-    }
-
-  /* Progress gauge */
-  if (data->total_time > 0)
-    {
-      ULONG progress = (data->current_time * 100) / data->total_time;
-      if (progress > 100)
-        progress = 100;
-      set (data->progress_gauge, MUIA_Gauge_Current, progress);
-      DPRINTF ("Progress: %lu%%\n", (unsigned long)progress);
-    }
-  else
-    {
-      set (data->progress_gauge, MUIA_Gauge_Current, 0);
-      DPRINTF ("No total time, progress = 0\n");
-    }
-
-  DPRINTF ("=== UpdateCurrentSongDisplay FIXED TIME END ===\n");
-}
-
-static BOOL
-PlayCurrentSong (struct SIDPlayerData *data)
-{
-  UBYTE *file_data;
-  ULONG file_size;
-  STRPTR error_details = NULL;
-  LONG result;
-
-  if (!data->connection || !data->current_entry)
-    {
-      return FALSE;
-    }
-
-  DPRINTF ("=== PlayCurrentSong FIXED START ===\n");
-
-  /* Update cache BEFORE doing anything else */
-  UpdateCurrentSongCache (data);
-
-  /* Use cached values for safety */
-  UWORD current_subsong = current_song_cache.cached_current;
-  UWORD total_subsongs = current_song_cache.cached_subsongs;
-
-  /* Ultimate64 expects subsong numbers starting from 1, not 0 */
-  UBYTE ultimate64_subsong = current_subsong + 1;
-
-  DPRINTF ("PlayCurrentSong: Playing subsong %d (0-based) = %d (Ultimate64 "
-           "1-based)\n",
-           current_subsong, ultimate64_subsong);
-
-  /* Load file */
-  file_data = LoadFile (data->current_entry->filename, &file_size);
-  if (!file_data)
-    {
-      UpdateStatus (data, "Failed to load SID file");
-      return FALSE;
-    }
-
-  /* Play SID with specific subsong (1-based for Ultimate64) */
-  result = U64_PlaySID (data->connection, file_data, file_size,
-                        ultimate64_subsong, &error_details);
-
-  FreeMem (file_data, file_size);
-
-  if (result != U64_OK)
-    {
-      char error_msg[512];
-      sprintf (error_msg, "SID playback failed: %s",
-               error_details ? error_details : U64_GetErrorString (result));
-      UpdateStatus (data, error_msg);
-
-      if (error_details)
-        {
-          FreeMem (error_details, strlen (error_details) + 1);
-        }
-      return FALSE;
-    }
-
-  if (error_details)
-    {
-      FreeMem (error_details, strlen (error_details) + 1);
-    }
-
-  /* Set proper total time for current subsong (already includes +1 second) */
-  data->state = PLAYER_PLAYING;
-  data->current_time = 0;
-
-  /* Get duration for the specific subsong being played */
-  data->total_time
-      = FindSongLength (data, data->current_entry->md5, current_subsong);
-
-  DPRINTF ("Set total_time to %lu seconds for subsong %d (includes +1 second "
-           "buffer)\n",
-           (unsigned long)data->total_time, current_subsong);
-
-  data->timer_counter = 0;
-
-  /* Update display using cached values */
-  UpdateCurrentSongDisplay (data);
-
-  /* CRITICAL FIX: Build status message using cached values and manual string
-   * building */
-  char *basename = FilePart (current_song_cache.cached_filename);
-
-  /* Use global string to avoid stack corruption */
-  static char status_msg[256];
-  strcpy (status_msg, "Playing ");
-  strcat (status_msg, basename);
-  strcat (status_msg, " [");
-
-  /* Add current subsong (1-based) manually */
-  int display_current = (int)current_subsong + 1;
-  if (display_current < 10)
-    {
-      char c = '0' + display_current;
-      strncat (status_msg, &c, 1);
-    }
-  else if (display_current < 100)
-    {
-      char temp[3];
-      temp[0] = '0' + (display_current / 10);
-      temp[1] = '0' + (display_current % 10);
-      temp[2] = '\0';
-      strcat (status_msg, temp);
-    }
-
-  strcat (status_msg, "/");
-
-  /* Add total subsongs manually */
-  int display_total = (int)total_subsongs;
-  if (display_total < 10)
-    {
-      char c = '0' + display_total;
-      strncat (status_msg, &c, 1);
-    }
-  else if (display_total < 100)
-    {
-      char temp[3];
-      temp[0] = '0' + (display_total / 10);
-      temp[1] = '0' + (display_total % 10);
-      temp[2] = '\0';
-      strcat (status_msg, temp);
-    }
-
-  strcat (status_msg, "]");
-
-  DPRINTF ("Status message built: '%s'\n", status_msg);
-  UpdateStatus (data, status_msg);
-
-  DPRINTF ("=== PlayCurrentSong FIXED END ===\n");
-  return TRUE;
-}
-
-/* Go to next song */
-static void
-NextSong (struct SIDPlayerData *data)
-{
-  if (!data->current_entry)
-    {
-      return;
-    }
-
-  DPRINTF ("=== NextSong START ===\n");
-
-  /* Update cache first */
-  UpdateCurrentSongCache (data);
-
-  /* Check if we have more subsongs */
-  if (data->current_entry->current_subsong + 1
-      < current_song_cache.cached_subsongs)
-    {
-      DPRINTF ("Moving to next subsong: %d -> %d\n",
-               data->current_entry->current_subsong,
-               data->current_entry->current_subsong + 1);
-
-      data->current_entry->current_subsong++;
-
-      /* Update duration for new subsong */
-      data->current_entry->duration
-          = FindSongLength (data, data->current_entry->md5,
-                            data->current_entry->current_subsong);
-      if (data->current_entry->duration == 0)
-        {
-          data->current_entry->duration = DEFAULT_SONG_LENGTH;
-        }
-
-      DPRINTF ("New subsong duration: %lu seconds\n",
-               (unsigned long)data->current_entry->duration);
-
-      /* Update cache with new values */
-      UpdateCurrentSongCache (data);
-
-      UpdatePlaylistDisplay (data);
-      if (data->state == PLAYER_PLAYING)
-        {
-          PlayCurrentSong (data);
-        }
-      else
-        {
-          UpdateCurrentSongDisplay (data);
-        }
-      return;
-    }
-
-  /* Reset current subsong */
-  data->current_entry->current_subsong = 0;
-
-  /* Move to next entry */
-  if (data->shuffle_mode)
-    {
-      /* Random selection */
-      if (data->playlist_count > 1)
-        {
-          ULONG random_index;
-          PlaylistEntry *entry;
-          ULONG i;
-
-          do
-            {
-              random_index = rand () % data->playlist_count;
-            }
-          while (random_index == data->current_index
-                 && data->playlist_count > 1);
-
-          entry = data->playlist_head;
-          for (i = 0; i < random_index && entry; i++)
-            {
-              entry = entry->next;
-            }
-
-          data->current_entry = entry;
-          data->current_index = random_index;
-
-          /* Update playlist selection visually */
-          set (data->playlist_list, MUIA_List_Active, random_index);
-          DPRINTF ("Shuffle: moved to random index %lu\n",
-                   (unsigned long)random_index);
-        }
-    }
-  else
-    {
-      /* Sequential */
-      if (data->current_entry->next)
-        {
-          data->current_entry = data->current_entry->next;
-          data->current_index++;
-
-          /* Update playlist selection visually */
-          set (data->playlist_list, MUIA_List_Active, data->current_index);
-          DPRINTF ("Sequential: moved to index %lu\n",
-                   (unsigned long)data->current_index);
-        }
-      else if (data->repeat_mode)
-        {
-          data->current_entry = data->playlist_head;
-          data->current_index = 0;
-
-          /* Update playlist selection visually */
-          set (data->playlist_list, MUIA_List_Active, 0);
-          DPRINTF ("Repeat: back to first song\n");
-        }
-      else
-        {
-          /* End of playlist */
-          data->state = PLAYER_STOPPED;
-          UpdateStatus (data, "Playlist finished");
-          UpdateCurrentSongDisplay (data);
-          DPRINTF ("End of playlist reached\n");
-          return;
-        }
-    }
-
-  /* Update duration for new song */
-  data->current_entry->duration = FindSongLength (
-      data, data->current_entry->md5, data->current_entry->current_subsong);
-  if (data->current_entry->duration == 0)
-    {
-      data->current_entry->duration = DEFAULT_SONG_LENGTH;
-    }
-
-  /* Update cache with new song */
-  UpdateCurrentSongCache (data);
-
-  UpdatePlaylistDisplay (data);
-
-  if (data->state == PLAYER_PLAYING)
-    {
-      PlayCurrentSong (data);
-    }
-  else
-    {
-      UpdateCurrentSongDisplay (data);
-    }
-
-  DPRINTF ("=== NextSong END ===\n");
-}
-
-static void
-PrevSong (struct SIDPlayerData *data)
-{
-  if (!data->current_entry)
-    {
-      return;
-    }
-
-  DPRINTF ("=== PrevSong START ===\n");
-
-  /* If we're more than 3 seconds into the song, restart current song */
-  if (data->current_time > 3)
-    {
-      DPRINTF ("Restarting current song (time > 3 seconds)\n");
-      if (data->state == PLAYER_PLAYING)
-        {
-          PlayCurrentSong (data);
-        }
-      return;
-    }
-
-  /* Check if we can go to previous subsong */
-  if (data->current_entry->current_subsong > 0)
-    {
-      DPRINTF ("Moving to previous subsong\n");
-      data->current_entry->current_subsong--;
-
-      /* Update duration for previous subsong */
-      data->current_entry->duration
-          = FindSongLength (data, data->current_entry->md5,
-                            data->current_entry->current_subsong);
-      if (data->current_entry->duration == 0)
-        {
-          data->current_entry->duration = DEFAULT_SONG_LENGTH;
-        }
-
-      UpdateCurrentSongCache (data);
-      UpdatePlaylistDisplay (data);
-
-      if (data->state == PLAYER_PLAYING)
-        {
-          PlayCurrentSong (data);
-        }
-      else
-        {
-          UpdateCurrentSongDisplay (data);
-        }
-      return;
-    }
-
-  /* Move to previous entry */
-  if (data->current_index > 0)
-    {
-      PlaylistEntry *entry = data->playlist_head;
-      ULONG i;
-
-      for (i = 0; i < data->current_index - 1 && entry; i++)
-        {
-          entry = entry->next;
-        }
-
-      if (entry)
-        {
-          data->current_entry = entry;
-          data->current_index--;
-
-          /* Set to last subsong */
-          data->current_entry->current_subsong
-              = data->current_entry->subsongs - 1;
-
-          /* Update duration */
-          data->current_entry->duration
-              = FindSongLength (data, data->current_entry->md5,
-                                data->current_entry->current_subsong);
-          if (data->current_entry->duration == 0)
-            {
-              data->current_entry->duration = DEFAULT_SONG_LENGTH;
-            }
-
-          /* Update playlist selection visually */
-          set (data->playlist_list, MUIA_List_Active, data->current_index);
-
-          UpdateCurrentSongCache (data);
-          UpdatePlaylistDisplay (data);
-
-          if (data->state == PLAYER_PLAYING)
-            {
-              PlayCurrentSong (data);
-            }
-          else
-            {
-              UpdateCurrentSongDisplay (data);
-            }
-
-          DPRINTF ("Moved to previous song at index %lu\n",
-                   (unsigned long)data->current_index);
-        }
-    }
-  else
-    {
-      DPRINTF ("Already at first song\n");
-    }
-
-  DPRINTF ("=== PrevSong END ===\n");
-}
-
-/* Create configuration window */
-static Object *
-CreateConfigWindow (struct SIDPlayerData *data)
-{
-  Object *window, *ok_button, *cancel_button;
-  Object *host_string, *password_string;
-
-  window = WindowObject, MUIA_Window_Title, "Ultimate64 Configuration",
-  MUIA_Window_ID, MAKE_ID ('C', 'F', 'G', 'W'), MUIA_Window_Width, 400,
-  MUIA_Window_Height, 150, MUIA_Window_CloseGadget, FALSE,
-
-  WindowContents, VGroup, Child, VGroup, MUIA_Frame, MUIV_Frame_Group,
-  MUIA_FrameTitle, "Connection Settings",
-
-  Child, HGroup, Child, Label ("Host:"), Child, host_string = StringObject,
-  MUIA_String_Contents, (CONST_STRPTR)data->host, MUIA_String_MaxLen, 255, End,
-  End,
-
-  Child, HGroup, Child, Label ("Password:"), Child,
-  password_string = StringObject, MUIA_String_Contents,
-  (CONST_STRPTR)data->password, MUIA_String_MaxLen, 255, MUIA_String_Secret,
-  TRUE, End, End,
-
-  Child, VSpace (10),
-
-  Child, TextObject, MUIA_Text_Contents,
-  "Leave password empty if not required.\nSettings will be saved to ENV: and "
-  "ENVARC:",
-  MUIA_Text_PreParse, "\33c", MUIA_Font, MUIV_Font_Tiny, End, End,
-
-  Child, VSpace (10),
-
-  Child, HGroup, Child, HSpace (0), Child, ok_button = SimpleButton ("OK"),
-  Child, HSpace (10), Child, cancel_button = SimpleButton ("Cancel"), Child,
-  HSpace (0), End, End, End;
-
-  if (window)
-    {
-      /* Store object pointers */
-      data->config_window = window;
-      data->config_host_string = host_string;
-      data->config_password_string = password_string;
-
-      /* Set up notifications */
-      DoMethod (ok_button, MUIM_Notify, MUIA_Pressed, FALSE, data->app, 2,
-                MUIM_Application_ReturnID, ID_CONFIG_OK);
-
-      DoMethod (cancel_button, MUIM_Notify, MUIA_Pressed, FALSE, data->app, 2,
-                MUIM_Application_ReturnID, ID_CONFIG_CANCEL);
-
-      /* Add window to application */
-      DoMethod (data->app, OM_ADDMEMBER, window);
-    }
-
-  return window;
-}
-
-/* Open configuration window */
-static void
-OpenConfigWindow (struct SIDPlayerData *data)
-{
-  if (!data->config_window)
-    {
-      CreateConfigWindow (data);
-    }
-
-  if (data->config_window)
-    {
-      /* Update string gadgets with current values */
-      set (data->config_host_string, MUIA_String_Contents,
-           (CONST_STRPTR)data->host);
-      set (data->config_password_string, MUIA_String_Contents,
-           (CONST_STRPTR)data->password);
-
-      /* Open the window */
-      set (data->config_window, MUIA_Window_Open, TRUE);
-    }
-}
-
-/* Close configuration window */
-static void
-CloseConfigWindow (struct SIDPlayerData *data)
-{
-  if (data->config_window)
-    {
-      set (data->config_window, MUIA_Window_Open, FALSE);
-    }
-}
-
-/* Apply configuration changes */
-static void
-ApplyConfigChanges (struct SIDPlayerData *data)
-{
-  STRPTR host_str, password_str;
-
-  if (!data->config_window)
-    {
-      return;
-    }
-
-  /* Get values from string gadgets */
-  get (data->config_host_string, MUIA_String_Contents, &host_str);
-  get (data->config_password_string, MUIA_String_Contents, &password_str);
-
-  /* Validate and copy values */
-  if (host_str && strlen (host_str) > 0)
-    {
-      strncpy (data->host, host_str, sizeof (data->host) - 1);
-      data->host[sizeof (data->host) - 1] = '\0';
-    }
-
-  if (password_str)
-    {
-      strncpy (data->password, password_str, sizeof (data->password) - 1);
-      data->password[sizeof (data->password) - 1] = '\0';
-    }
-
-  /* Save configuration */
-  SaveConfig (data);
-
-  /* Close window */
-  CloseConfigWindow (data);
-}
-
-/* Clear all configuration */
-static void
-ClearConfig (struct SIDPlayerData *data)
-{
-  /* Clear connection settings */
-  DeleteVar (ENV_ULTIMATE64_HOST, GVF_GLOBAL_ONLY);
-  DeleteVar (ENV_ULTIMATE64_PASSWORD, GVF_GLOBAL_ONLY);
-  DeleteFile ("ENVARC:" ENV_ULTIMATE64_HOST);
-  DeleteFile ("ENVARC:" ENV_ULTIMATE64_PASSWORD);
-
-  /* Clear SID directory preference */
-  ClearSidDirectoryPref (data);
-
-  /* Reset to defaults */
-  data->host[0] = '\0';
-  data->password[0] = '\0';
-
-  UpdateStatus (data, "All configuration cleared");
-}
-
-/* Create menu bar */
-static Object *
-CreateMenuBar (struct SIDPlayerData *data)
-{
-  Object *menu;
-
-  /* Suppress unused parameter warning */
-  (void)data;
-
-  menu = MUI_MakeObject (MUIO_MenustripNM, MainMenu, 0);
-  return menu;
-}
-
-/* Show about dialog */
-static void
-ShowAboutDialog (struct SIDPlayerData *data)
-{
-  Object *about_window, *ok_button;
-  BOOL running = TRUE;
-  ULONG signals;
-  ULONG about_id = 999; /* Unique ID for about dialog */
-
-  about_window = WindowObject, MUIA_Window_Title,
-  "About Ultimate64 SID Player", MUIA_Window_Width, 300, MUIA_Window_Height,
-  150, MUIA_Window_CloseGadget, FALSE, MUIA_Window_DepthGadget, FALSE,
-  MUIA_Window_SizeGadget, FALSE, MUIA_Window_DragBar, TRUE,
-
-  WindowContents, VGroup, Child, VSpace (10), Child, TextObject,
-  MUIA_Text_Contents, "Ultimate64 SID Player v1.0", MUIA_Text_PreParse,
-  "\33c\33b", MUIA_Font, MUIV_Font_Big, End, Child, VSpace (5), Child,
-  TextObject, MUIA_Text_Contents, "Playlist SID Player for Ultimate64",
-  MUIA_Text_PreParse, "\33c", End, Child, VSpace (5), Child, TextObject,
-  MUIA_Text_Contents, "2025 Marcin Spoczynski", MUIA_Text_PreParse, "\33c",
-  MUIA_Font, MUIV_Font_Tiny, End, Child, VSpace (10), Child, HGroup, Child,
-  HSpace (0), Child, ok_button = SimpleButton ("OK"), Child, HSpace (0), End,
-  Child, VSpace (10), End, End;
-
-  if (about_window)
-    {
-      DoMethod (data->app, OM_ADDMEMBER, about_window);
-
-      /* Set up notification for OK button */
-      DoMethod (ok_button, MUIM_Notify, MUIA_Pressed, FALSE, data->app, 2,
-                MUIM_Application_ReturnID, about_id);
-
-      set (about_window, MUIA_Window_Open, TRUE);
-
-      /* Simple event loop for about dialog */
-      while (running)
-        {
-          ULONG id = DoMethod (data->app, MUIM_Application_Input, &signals);
-
-          if (id == about_id)
-            {
-              running = FALSE;
-            }
-
-          if (running && signals)
-            {
-              Wait (signals);
-            }
-        }
-
-      set (about_window, MUIA_Window_Open, FALSE);
-      DoMethod (data->app, OM_REMMEMBER, about_window);
-      MUI_DisposeObject (about_window);
-    }
-}
-
-static void
-DoAddFiles (struct SIDPlayerData *data)
-{
-  struct FileRequester *req;
-
-  /* Use AllocAslRequestTags instead of manual TagItem array */
-  if (strlen (data->last_sid_dir) > 0)
-    {
-      /* Check if directory still exists */
-      BPTR lock = Lock (data->last_sid_dir, ACCESS_READ);
-      if (lock)
-        {
-          UnLock (lock);
-          DPRINTF ("Using remembered SID directory: %s\n", data->last_sid_dir);
-
-          /* Use remembered directory */
-          req = AllocAslRequestTags (
-              ASL_FileRequest, ASLFR_TitleText, "Select SID files to add",
-              ASLFR_DoPatterns, TRUE, ASLFR_InitialPattern, "#?.sid",
-              ASLFR_DoMultiSelect, TRUE, ASLFR_InitialDrawer,
-              data->last_sid_dir, TAG_DONE);
-        }
-      else
-        {
-          DPRINTF ("Remembered SID directory no longer exists: %s\n",
-                   data->last_sid_dir);
-          data->last_sid_dir[0] = '\0'; /* Clear invalid directory */
-
-          /* Use default (no initial directory) */
-          req = AllocAslRequestTags (
-              ASL_FileRequest, ASLFR_TitleText, "Select SID files to add",
-              ASLFR_DoPatterns, TRUE, ASLFR_InitialPattern, "#?.sid",
-              ASLFR_DoMultiSelect, TRUE, TAG_DONE);
-        }
-    }
-  else
-    {
-      /* No remembered directory - use default */
-      req = AllocAslRequestTags (ASL_FileRequest, ASLFR_TitleText,
-                                 "Select SID files to add", ASLFR_DoPatterns,
-                                 TRUE, ASLFR_InitialPattern, "#?.sid",
-                                 ASLFR_DoMultiSelect, TRUE, TAG_DONE);
-    }
-
-  if (req && AslRequest (req, NULL))
-    {
-      struct WBArg *args = req->rf_ArgList;
-      LONG num_args = req->rf_NumArgs;
-      LONG i;
-      char filename[512];
-      ULONG added = 0;
-
-      /* Remember the directory for next time */
-      if (req->rf_Dir && strlen (req->rf_Dir) > 0)
-        {
-          strncpy (data->last_sid_dir, req->rf_Dir,
-                   sizeof (data->last_sid_dir) - 1);
-          data->last_sid_dir[sizeof (data->last_sid_dir) - 1] = '\0';
-          SaveSidDirectoryPref (data);
-          DPRINTF ("Remembered new SID directory: %s\n", data->last_sid_dir);
-        }
-
-      for (i = 0; i < num_args; i++)
-        {
-          NameFromLock (args[i].wa_Lock, filename, sizeof (filename));
-          AddPart (filename, args[i].wa_Name, sizeof (filename));
-
-          if (AddPlaylistEntry (data, filename))
-            {
-              added++;
-            }
-        }
-
-      if (added > 0)
-        {
-          UpdatePlaylistDisplay (data);
-
-          char status_msg[256];
-          sprintf (status_msg, "Added %u files to playlist",
-                   (unsigned int)added);
-          UpdateStatus (data, status_msg);
-
-          /* If no current entry, select first one */
-          if (!data->current_entry && data->playlist_head)
-            {
-              data->current_entry = data->playlist_head;
-              data->current_index = 0;
-
-              /* Update duration for current subsong */
-              data->current_entry->duration
-                  = FindSongLength (data, data->current_entry->md5,
-                                    data->current_entry->current_subsong);
-              if (data->current_entry->duration == 0)
-                {
-                  data->current_entry->duration = DEFAULT_SONG_LENGTH;
+    /* Reset to beginning */
+    Seek(file, 0, OFFSET_BEGINNING);
+
+    /* Free existing database */
+    FreeSongLengthDB(obj);
+
+    APP_UpdateStatus("Loading song lengths database...");
+
+    while (FGets(file, line, sizeof(line))) {
+        char *md5_str, *length_str, *pos;
+        UBYTE md5[MD5_HASH_SIZE];
+        char *newline;
+
+        processed_lines++;
+
+        /* Update progress every 100 lines */
+        if ((processed_lines % 100) == 0) {
+            /* Build progress message manually */
+            static char progress_msg[256];
+            strcpy(progress_msg, "Loading database... ");
+            
+            /* Calculate percentage manually */
+            ULONG percent = (processed_lines * 100) / line_count;
+            
+            /* Convert percent to string */
+            char percent_str[8];
+            ULONG temp_percent = percent;
+            int pos = 0;
+            
+            if (temp_percent == 0) {
+                percent_str[0] = '0';
+                pos = 1;
+            } else {
+                char digits[8];
+                int digit_pos = 0;
+                
+                while (temp_percent > 0) {
+                    digits[digit_pos++] = '0' + (temp_percent % 10);
+                    temp_percent /= 10;
                 }
-
-              UpdateCurrentSongDisplay (data);
+                
+                for (int i = digit_pos - 1; i >= 0; i--) {
+                    percent_str[pos++] = digits[i];
+                }
             }
-        }
-    }
-
-  if (req)
-    {
-      FreeAslRequest (req);
-    }
-}
-
-static void
-ClearSidDirectoryPref (struct SIDPlayerData *data)
-{
-  /* Delete environment variable */
-  DeleteVar (ENV_ULTIMATE64_SID_DIR, GVF_GLOBAL_ONLY);
-
-  /* Delete persistent file */
-  DeleteFile ("ENVARC:" ENV_ULTIMATE64_SID_DIR);
-
-  /* Clear memory */
-  data->last_sid_dir[0] = '\0';
-
-  DPRINTF ("SID directory preference cleared\n");
-}
-
-/* Remove selected file from playlist */
-static void
-DoRemoveFile (struct SIDPlayerData *data)
-{
-  LONG active;
-
-  get (data->playlist_list, MUIA_List_Active, &active);
-
-  if (active == MUIV_List_Active_Off || active < 0)
-    {
-      UpdateStatus (data, "No file selected");
-      return;
-    }
-
-  /* Find entry to remove */
-  PlaylistEntry *entry = data->playlist_head;
-  PlaylistEntry *prev = NULL;
-  ULONG i;
-
-  for (i = 0; i < (ULONG)active && entry; i++)
-    {
-      prev = entry;
-      entry = entry->next;
-    }
-
-  if (!entry)
-    {
-      return;
-    }
-
-  /* Stop playback if removing current song */
-  if (entry == data->current_entry)
-    {
-      if (data->state == PLAYER_PLAYING)
-        {
-          data->state = PLAYER_STOPPED;
-        }
-      data->current_entry = entry->next;
-      if (!data->current_entry && data->playlist_head != entry)
-        {
-          data->current_entry = data->playlist_head;
-          data->current_index = 0;
-        }
-    }
-
-  /* Remove from list */
-  if (prev)
-    {
-      prev->next = entry->next;
-    }
-  else
-    {
-      data->playlist_head = entry->next;
-    }
-
-  /* Adjust current index */
-  if (data->current_index > (ULONG)active)
-    {
-      data->current_index--;
-    }
-
-  /* Free entry */
-  if (entry->filename)
-    {
-      FreeMem (entry->filename, strlen (entry->filename) + 1);
-    }
-  if (entry->title)
-    {
-      FreeMem (entry->title, strlen (entry->title) + 1);
-    }
-  FreeMem (entry, sizeof (PlaylistEntry));
-
-  data->playlist_count--;
-
-  UpdatePlaylistDisplay (data);
-  UpdateCurrentSongDisplay (data);
-  UpdateStatus (data, "File removed from playlist");
-}
-
-/* Clear playlist */
-static void
-DoClearPlaylist (struct SIDPlayerData *data)
-{
-  /* Stop playback */
-  if (data->state == PLAYER_PLAYING)
-    {
-      data->state = PLAYER_STOPPED;
-    }
-
-  FreePlaylist (data);
-  UpdatePlaylistDisplay (data);
-  UpdateCurrentSongDisplay (data);
-  UpdateStatus (data, "Playlist cleared");
-}
-
-/* Play */
-static void
-DoPlay (struct SIDPlayerData *data)
-{
-  LONG selected_index;
-
-  /* Check if we have a playlist */
-  if (data->playlist_count == 0)
-    {
-      UpdateStatus (data, "No songs in playlist");
-      return;
-    }
-
-  /* Get currently selected item in playlist */
-  get (data->playlist_list, MUIA_List_Active, &selected_index);
-
-  DPRINTF ("=== DoPlay START ===\n");
-  DPRINTF ("Current entry: %p (index %lu)\n", data->current_entry,
-           (unsigned long)data->current_index);
-  DPRINTF ("Selected index: %ld\n", selected_index);
-
-  /* If a song is selected in the playlist, use that */
-  if (selected_index != MUIV_List_Active_Off && selected_index >= 0
-      && selected_index < (LONG)data->playlist_count)
-    {
-
-      DPRINTF ("Using selected playlist entry: %ld\n", selected_index);
-
-      /* Find the selected entry */
-      PlaylistEntry *entry = data->playlist_head;
-      ULONG i;
-
-      for (i = 0; i < (ULONG)selected_index && entry; i++)
-        {
-          entry = entry->next;
-        }
-
-      if (entry)
-        {
-          /* Update current entry to the selected one */
-          data->current_entry = entry;
-          data->current_index = (ULONG)selected_index;
-
-          DPRINTF ("Set current entry to: %s (index %lu)\n",
-                   FilePart (entry->filename), (unsigned long)selected_index);
-
-          /* Update cache with new selection */
-          UpdateCurrentSongCache (data);
-
-          /* Start playing the selected song */
-          if (PlayCurrentSong (data))
-            {
-              /* Update playlist display to show current selection */
-              UpdatePlaylistDisplay (data);
-              DPRINTF ("Successfully started playing selected song\n");
+            percent_str[pos] = '\0';
+            
+            strcat(progress_msg, percent_str);
+            strcat(progress_msg, "% (");
+            
+            /* Add processed_lines count */
+            char processed_str[32];
+            ULONG temp_processed = processed_lines;
+            pos = 0;
+            
+            if (temp_processed == 0) {
+                processed_str[0] = '0';
+                pos = 1;
+            } else {
+                char digits[16];
+                int digit_pos = 0;
+                
+                while (temp_processed > 0) {
+                    digits[digit_pos++] = '0' + (temp_processed % 10);
+                    temp_processed /= 10;
+                }
+                
+                for (int i = digit_pos - 1; i >= 0; i--) {
+                    processed_str[pos++] = digits[i];
+                }
             }
-          else
-            {
-              DPRINTF ("Failed to start playing selected song\n");
+            processed_str[pos] = '\0';
+            
+            strcat(progress_msg, processed_str);
+            strcat(progress_msg, "/");
+            
+            /* Add total line count */
+            char total_str[32];
+            ULONG temp_total = line_count;
+            pos = 0;
+            
+            if (temp_total == 0) {
+                total_str[0] = '0';
+                pos = 1;
+            } else {
+                char digits[16];
+                int digit_pos = 0;
+                
+                while (temp_total > 0) {
+                    digits[digit_pos++] = '0' + (temp_total % 10);
+                    temp_total /= 10;
+                }
+                
+                for (int i = digit_pos - 1; i >= 0; i--) {
+                    total_str[pos++] = digits[i];
+                }
             }
+            total_str[pos] = '\0';
+            
+            strcat(progress_msg, total_str);
+            strcat(progress_msg, " entries)");
+            
+            APP_UpdateStatus(progress_msg);
+
+            /* Process MUI events to keep interface responsive */
+            ULONG signals;
+            DoMethod(obj->App, MUIM_Application_Input, &signals);
         }
-      else
-        {
-          DPRINTF ("ERROR: Could not find selected entry\n");
-          UpdateStatus (data, "Error: Could not find selected song");
+
+        /* Remove trailing newline */
+        newline = strchr(line, '\n');
+        if (newline) *newline = '\0';
+        newline = strchr(line, '\r');
+        if (newline) *newline = '\0';
+
+        /* Skip empty lines and comments */
+        if (line[0] == '\0' || line[0] == '#' || line[0] == ';') {
+            continue;
+        }
+
+        /* Find the '=' separator */
+        pos = strchr(line, '=');
+        if (!pos) {
+            continue;
+        }
+
+        *pos = '\0';
+        md5_str = line;
+        length_str = pos + 1;
+
+        /* Validate MD5 string length */
+        if (strlen(md5_str) != 32) {
+            continue;
+        }
+
+        /* Parse MD5 */
+        if (!HexStringToMD5(md5_str, md5)) {
+            continue;
+        }
+
+        /* Parse lengths */
+        ULONG lengths[256];
+        UWORD num_lengths = 0;
+
+        char length_copy[512];
+        strncpy(length_copy, length_str, sizeof(length_copy) - 1);
+        length_copy[sizeof(length_copy) - 1] = '\0';
+
+        char *token = strtok(length_copy, " \t");
+
+        while (token && num_lengths < 256) {
+            ULONG duration = ParseTimeString(token);
+            if (duration > 0) {
+                lengths[num_lengths] = duration + 1; /* +1 second buffer */
+                num_lengths++;
+            }
+            token = strtok(NULL, " \t");
+        }
+
+        if (num_lengths == 0) {
+            continue;
+        }
+
+        /* Create database entry */
+        entry = AllocVec(sizeof(SongLengthEntry), MEMF_PUBLIC | MEMF_CLEAR);
+        if (!entry) {
+            continue;
+        }
+
+        CopyMem(md5, entry->md5, MD5_HASH_SIZE);
+        entry->num_subsongs = num_lengths;
+        entry->lengths = AllocVec(sizeof(ULONG) * num_lengths, MEMF_PUBLIC);
+
+        if (!entry->lengths) {
+            FreeVec(entry);
+            continue;
+        }
+
+        CopyMem(lengths, entry->lengths, sizeof(ULONG) * num_lengths);
+
+        /* Add to database */
+        entry->next = obj->songlength_db;
+        obj->songlength_db = entry;
+        count++;
+    }
+
+    Close(file);
+
+    /* Build final status message manually */
+    static char status_msg[256];
+    strcpy(status_msg, "Loaded ");
+    
+    /* Convert count to string manually */
+    char count_str[32];
+    ULONG temp_count = count;
+    int pos = 0;
+    
+    if (temp_count == 0) {
+        count_str[0] = '0';
+        pos = 1;
+    } else {
+        char digits[16];
+        int digit_pos = 0;
+        
+        while (temp_count > 0) {
+            digits[digit_pos++] = '0' + (temp_count % 10);
+            temp_count /= 10;
+        }
+        
+        for (int i = digit_pos - 1; i >= 0; i--) {
+            count_str[pos++] = digits[i];
         }
     }
-  /* If no song is selected but we have a current entry, play it */
-  else if (data->current_entry)
-    {
-      DPRINTF ("No selection, playing current entry: %s\n",
-               FilePart (data->current_entry->filename));
+    count_str[pos] = '\0';
+    
+    strcat(status_msg, count_str);
+    strcat(status_msg, " song length entries (+1 sec buffer)");
+    APP_UpdateStatus(status_msg);
 
-      /* Update cache and play current song */
-      UpdateCurrentSongCache (data);
-      PlayCurrentSong (data);
-    }
-  /* If no current entry, default to first song */
-  else if (data->playlist_head)
-    {
-      DPRINTF ("No current entry, defaulting to first song\n");
-
-      data->current_entry = data->playlist_head;
-      data->current_index = 0;
-
-      /* Select first song in playlist visually */
-      set (data->playlist_list, MUIA_List_Active, 0);
-
-      /* Update cache and play */
-      UpdateCurrentSongCache (data);
-      PlayCurrentSong (data);
-      UpdatePlaylistDisplay (data);
-    }
-  else
-    {
-      UpdateStatus (data, "No songs in playlist");
-    }
-
-  DPRINTF ("=== DoPlay END ===\n");
-}
-/* Stop */
-static void
-DoStop (struct SIDPlayerData *data)
-{
-  if (data->state == PLAYER_PLAYING)
-    {
-      data->state = PLAYER_STOPPED;
-      data->current_time = 0;
-      UpdateCurrentSongDisplay (data);
-      UpdateStatus (data, "Stopped");
-    }
+    U64_DEBUG("Total entries loaded: %u (all durations include +1 second buffer)",
+              (unsigned int)count);
+    return TRUE;
 }
 
-/* Load song lengths file - FIXED to update existing playlist entries */
-/* Load song lengths file - FIXED to properly update existing playlist entries
- */
-/* Load song lengths file - FIXED to properly update existing playlist entries
- */
-static void
-DoLoadSongLengths (struct SIDPlayerData *data)
+/* Auto-load songlengths on startup */
+static void AutoLoadSongLengths(struct ObjApp *obj)
 {
-  struct FileRequester *req;
+    char filepath[512];
 
-  req = AllocAslRequestTags (ASL_FileRequest, ASLFR_TitleText,
-                             "Select Songlengths.md5 file", ASLFR_DoPatterns,
-                             TRUE, ASLFR_InitialPattern, "#?.md5", TAG_DONE);
+    U64_DEBUG("=== AutoLoadSongLengths START ===");
 
-  if (req && AslRequest (req, NULL))
-    {
-      char filename[512];
-      strcpy (filename, req->rf_Dir);
-      AddPart (filename, req->rf_File, sizeof (filename));
+    if (CheckSongLengthsFile(filepath, sizeof(filepath))) {
+        U64_DEBUG("Auto-loading songlengths from: %s", filepath);
 
-      DPRINTF ("=== Manual LoadSongLengths START ===\n");
+        APP_UpdateStatus("Auto-loading songlengths database...");
 
-      /* Disable button during loading */
-      set (data->btn_load_songlengths, MUIA_Disabled, TRUE);
-      set (data->btn_load_songlengths, MUIA_Text_Contents, "Loading...");
+        /* Disable the Load Songlengths button temporarily */
+        set(obj->BTN_LoadSongLengths, MUIA_Disabled, TRUE);
+        set(obj->BTN_LoadSongLengths, MUIA_Text_Contents, "Loading...");
 
-      if (LoadSongLengthsWithProgress (data, filename))
-        {
-          /* Update existing playlist entries with progress feedback */
-          if (data->playlist_count > 0)
-            {
-              PlaylistEntry *entry = data->playlist_head;
-              ULONG updated = 0;
-              ULONG entry_num = 0;
+        if (LoadSongLengthsWithProgress(obj, filepath)) {
+            /* Update any existing playlist entries */
+            if (obj->playlist_count > 0) {
+                APP_UpdateStatus("Updating playlist with song lengths...");
 
-              UpdateStatus (data, "Updating playlist entries...");
+                PlaylistEntry *entry = obj->playlist_head;
+                ULONG updated = 0;
+                ULONG entry_num = 0;
 
-              while (entry)
-                {
-                  entry_num++;
+                while (entry) {
+                    entry_num++;
 
-                  /* Update progress */
-                  if ((entry_num % 5) == 0)
-                    {
-                      char progress_msg[256];
-                      sprintf (progress_msg, "Updating playlist... %lu/%lu",
-                               (unsigned long)entry_num,
-                               (unsigned long)data->playlist_count);
-                      UpdateStatus (data, progress_msg);
+                    /* Update progress every 10 entries */
+                    if ((entry_num % 10) == 0) {
+                        char progress_msg[256];
+                        sprintf(progress_msg, "Updating playlist... %u/%u",
+                                (unsigned int)entry_num,
+                                (unsigned int)obj->playlist_count);
+                        APP_UpdateStatus(progress_msg);
 
-                      /* Process MUI events */
-                      ULONG signals;
-                      DoMethod (data->app, MUIM_Application_Input, &signals);
+                        /* Process MUI events */
+                        ULONG signals;
+                        DoMethod(obj->App, MUIM_Application_Input, &signals);
                     }
 
-                  /* Update subsong count from database */
-                  SongLengthEntry *db_entry = data->songlength_db;
+                    /* Check if we have this SID in database */
+                    SongLengthEntry *db_entry = obj->songlength_db;
 
-                  while (db_entry)
-                    {
-                      if (MD5Compare (db_entry->md5, entry->md5))
-                        {
-                          if (db_entry->num_subsongs > entry->subsongs
-                              && db_entry->num_subsongs <= 256)
-                            {
-                              entry->subsongs = db_entry->num_subsongs;
-                              updated++;
+                    while (db_entry) {
+                        if (memcmp(db_entry->md5, entry->md5, MD5_HASH_SIZE) == 0) {
+                            UWORD old_subsongs = entry->subsongs;
+
+                            if (db_entry->num_subsongs > old_subsongs
+                                && db_entry->num_subsongs <= 256) {
+                                entry->subsongs = db_entry->num_subsongs;
+                                updated++;
+                                U64_DEBUG("Updated %s: %d -> %d subsongs",
+                                          FilePart(entry->filename),
+                                          old_subsongs, entry->subsongs);
                             }
-                          entry->duration = FindSongLength (
-                              data, entry->md5, entry->current_subsong);
-                          break;
+
+                            /* Update duration for current subsong */
+                            entry->duration = FindSongLength(obj, entry->md5, entry->current_subsong);
+                            break;
                         }
-                      db_entry = db_entry->next;
+                        db_entry = db_entry->next;
                     }
 
-                  entry = entry->next;
+                    entry = entry->next;
                 }
 
-              /* Update displays */
-              UpdatePlaylistDisplay (data);
-              if (data->current_entry)
-                {
-                  UpdateCurrentSongCache (data);
-                  UpdateCurrentSongDisplay (data);
+                /* Update display */
+                APP_UpdatePlaylistDisplay();
+                if (obj->current_entry) {
+                    APP_UpdateCurrentSongCache();
+                    APP_UpdateCurrentSongDisplay();
                 }
 
-              char final_msg[256];
-              sprintf (final_msg,
-                       "Database loaded. Updated %lu of %lu playlist entries",
-                       (unsigned long)updated,
-                       (unsigned long)data->playlist_count);
-              UpdateStatus (data, final_msg);
+                char final_msg[256];
+                sprintf(final_msg,
+                        "Database loaded. Updated %u of %u playlist entries",
+                        (unsigned int)updated,
+                        (unsigned int)obj->playlist_count);
+                APP_UpdateStatus(final_msg);
+            } else {
+                APP_UpdateStatus("Songlengths database loaded successfully");
             }
         }
 
-      /* Re-enable button */
-      set (data->btn_load_songlengths, MUIA_Disabled, FALSE);
-      set (data->btn_load_songlengths, MUIA_Text_Contents, "Load Songlengths");
+        /* Re-enable the button */
+        set(obj->BTN_LoadSongLengths, MUIA_Disabled, FALSE);
+        set(obj->BTN_LoadSongLengths, MUIA_Text_Contents, "Load Songlengths");
+    } else {
+        U64_DEBUG("No songlengths file found in program directory");
+        APP_UpdateStatus("Ready - No songlengths database found");
     }
 
-  if (req)
-    {
-      FreeAslRequest (req);
+    U64_DEBUG("=== AutoLoadSongLengths END ===");
+}
+
+/* Menu creation */
+static void CreateMenu(struct ObjApp *obj)
+{
+    obj->MN_Project_About = MenuitemObject,
+        MUIA_Menuitem_Title, "About...",
+        MUIA_Menuitem_Shortcut, "?",
+    End;
+
+    obj->MN_Project_Config = MenuitemObject,
+        MUIA_Menuitem_Title, "Configure...",
+        MUIA_Menuitem_Shortcut, "C",
+    End;
+
+    obj->MN_Project_Quit = MenuitemObject,
+        MUIA_Menuitem_Title, "Quit",
+        MUIA_Menuitem_Shortcut, "Q",
+    End;
+
+    Object *menu1 = MenuitemObject,
+        MUIA_Menuitem_Title, "Project",
+        MUIA_Family_Child, obj->MN_Project_About,
+        MUIA_Family_Child, MenuitemObject, MUIA_Menuitem_Title, "", End, /* separator */
+        MUIA_Family_Child, obj->MN_Project_Config,
+        MUIA_Family_Child, MenuitemObject, MUIA_Menuitem_Title, "", End, /* separator */
+        MUIA_Family_Child, obj->MN_Project_Quit,
+    End;
+
+    obj->MN_Main = MenustripObject,
+        MUIA_Family_Child, menu1,
+    End;
+}
+
+static void CreateMenuEvents(struct ObjApp *obj)
+{
+    DoMethod(obj->MN_Project_About, MUIM_Notify, MUIA_Menuitem_Trigger,
+             MUIV_EveryTime, obj->App, 2, MUIM_Application_ReturnID, EVENT_ABOUT);
+
+    DoMethod(obj->MN_Project_Config, MUIM_Notify, MUIA_Menuitem_Trigger,
+             MUIV_EveryTime, obj->App, 2, MUIM_Application_ReturnID, EVENT_CONFIG_OPEN);
+
+    DoMethod(obj->MN_Project_Quit, MUIM_Notify, MUIA_Menuitem_Trigger,
+             MUIV_EveryTime, obj->App, 2, MUIM_Application_ReturnID, MUIV_Application_ReturnID_Quit);
+}
+
+/* Window creation */
+static void CreateWindowMain(struct ObjApp *obj)
+{
+    Object *group1, *group2, *group3, *group4, *group0;
+
+    /* Create controls */
+    obj->BTN_Connect = U64SimpleButton("Connect");
+    obj->BTN_LoadSongLengths = U64SimpleButton("Load Songlengths");
+    obj->TXT_Status = MUI_NewObject(MUIC_Text,
+        MUIA_Frame, MUIV_Frame_Text,
+        MUIA_Text_Contents, "Ready",
+        TAG_DONE);
+    obj->TXT_ConnectionStatus = MUI_NewObject(MUIC_Text,
+        MUIA_Frame, MUIV_Frame_Text,
+        MUIA_Text_Contents, "Disconnected",
+        TAG_DONE);
+
+    obj->LSV_PlaylistList = MUI_NewObject(MUIC_Listview,
+        MUIA_Listview_List, MUI_NewObject(MUIC_List,
+            MUIA_Frame, MUIV_Frame_InputList,
+            MUIA_List_Active, MUIV_List_Active_Top,
+            MUIA_List_Format, "",
+            MUIA_List_Title, FALSE,
+            TAG_DONE),
+        MUIA_Listview_Input, TRUE,
+        MUIA_Listview_DoubleClick, TRUE,
+        MUIA_Listview_MultiSelect, MUIV_Listview_MultiSelect_None,
+        TAG_DONE);
+
+    obj->BTN_AddFile = U64SimpleButton("Add Files");
+    obj->BTN_RemoveFile = U64SimpleButton("Remove");
+    obj->BTN_ClearPlaylist = U64SimpleButton("Clear All");
+
+    obj->BTN_Play = U64SimpleButton("Play");
+    obj->BTN_Stop = U64SimpleButton("Stop");
+    obj->BTN_Next = U64SimpleButton(">>");
+    obj->BTN_Prev = U64SimpleButton("<<");
+
+    obj->CHK_Shuffle = U64CheckMark(FALSE);
+    obj->CHK_Repeat = U64CheckMark(FALSE);
+
+    obj->TXT_CurrentSong = MUI_NewObject(MUIC_Text,
+        MUIA_Text_Contents, "No song loaded",
+        MUIA_Text_PreParse, "\33c\33b",
+        MUIA_Font, MUIV_Font_Big,
+        TAG_DONE);
+
+    obj->TXT_CurrentTime = MUI_NewObject(MUIC_Text,
+        MUIA_Text_Contents, "0:00",
+        TAG_DONE);
+
+    obj->TXT_TotalTime = MUI_NewObject(MUIC_Text,
+        MUIA_Text_Contents, "0:00",
+        TAG_DONE);
+
+    obj->GAU_Progress = MUI_NewObject(MUIC_Gauge,
+        MUIA_Gauge_Horiz, TRUE,
+        MUIA_Gauge_Max, 100,
+        MUIA_Gauge_Current, 0,
+        TAG_DONE);
+
+    obj->TXT_SubsongInfo = MUI_NewObject(MUIC_Text,
+        MUIA_Text_Contents, "",
+        MUIA_Text_PreParse, "\33c",
+        TAG_DONE);
+
+    /* Create groups */
+    group1 = MUI_NewObject(MUIC_Group,
+        MUIA_Frame, MUIV_Frame_Group,
+        MUIA_FrameTitle, "Connection",
+        MUIA_Group_Horiz, TRUE,
+        Child, obj->BTN_Connect,
+        Child, obj->BTN_LoadSongLengths,
+        Child, MUI_NewObject(MUIC_Rectangle, TAG_DONE), /* spacer */
+        Child, U64Label("Status:"),
+        Child, obj->TXT_ConnectionStatus,
+        TAG_DONE);
+
+    group2 = MUI_NewObject(MUIC_Group,
+        MUIA_Frame, MUIV_Frame_Group,
+        MUIA_FrameTitle, "Now Playing",
+        Child, obj->TXT_CurrentSong,
+        Child, obj->TXT_SubsongInfo,
+        Child, MUI_NewObject(MUIC_Group,
+            MUIA_Group_Horiz, TRUE,
+            Child, obj->TXT_CurrentTime,
+            Child, obj->GAU_Progress,
+            Child, obj->TXT_TotalTime,
+            TAG_DONE),
+        TAG_DONE);
+
+    group3 = MUI_NewObject(MUIC_Group,
+        MUIA_Frame, MUIV_Frame_Group,
+        MUIA_FrameTitle, "Controls",
+        MUIA_Group_Horiz, TRUE,
+        Child, obj->BTN_Prev,
+        Child, obj->BTN_Play,
+        Child, obj->BTN_Stop,
+        Child, obj->BTN_Next,
+        Child, MUI_NewObject(MUIC_Rectangle, MUIA_Weight, 10, TAG_DONE), /* spacer */
+        Child, obj->CHK_Shuffle,
+        Child, U64Label("Shuffle"),
+        Child, obj->CHK_Repeat,
+        Child, U64Label("Repeat"),
+        TAG_DONE);
+
+    group4 = MUI_NewObject(MUIC_Group,
+        MUIA_Frame, MUIV_Frame_Group,
+        MUIA_FrameTitle, "Playlist",
+        Child, MUI_NewObject(MUIC_Group,
+            MUIA_Group_Horiz, TRUE,
+            Child, obj->BTN_AddFile,
+            Child, obj->BTN_RemoveFile,
+            Child, obj->BTN_ClearPlaylist,
+            Child, MUI_NewObject(MUIC_Rectangle, TAG_DONE), /* spacer */
+            TAG_DONE),
+        Child, obj->LSV_PlaylistList,
+        TAG_DONE);
+
+    group0 = MUI_NewObject(MUIC_Group,
+        MUIA_Group_Columns, 1,
+        Child, group1,
+        Child, group2,
+        Child, group3,
+        Child, group4,
+        Child, obj->TXT_Status,
+        TAG_DONE);
+
+    /* Create main window */
+    obj->WIN_Main = MUI_NewObject(MUIC_Window,
+        MUIA_Window_Title, "Ultimate64 SID Player",
+        MUIA_Window_ID, APP_ID_WIN_MAIN,
+        MUIA_Window_SizeGadget, TRUE,
+        WindowContents, group0,
+        TAG_DONE);
+}
+
+static void CreateWindowMainEvents(struct ObjApp *obj)
+{
+    /* Window events */
+    DoMethod(obj->WIN_Main, MUIM_Notify, MUIA_Window_CloseRequest, TRUE,
+             obj->App, 2, MUIM_Application_ReturnID, MUIV_Application_ReturnID_Quit);
+
+    /* Button events */
+    DoMethod(obj->BTN_Connect, MUIM_Notify, MUIA_Pressed, FALSE,
+             obj->App, 2, MUIM_Application_ReturnID, EVENT_CONNECT);
+
+    DoMethod(obj->BTN_LoadSongLengths, MUIM_Notify, MUIA_Pressed, FALSE,
+             obj->App, 2, MUIM_Application_ReturnID, EVENT_LOAD_SONGLENGTHS);
+
+    DoMethod(obj->BTN_AddFile, MUIM_Notify, MUIA_Pressed, FALSE,
+             obj->App, 2, MUIM_Application_ReturnID, EVENT_ADD_FILE);
+
+    DoMethod(obj->BTN_RemoveFile, MUIM_Notify, MUIA_Pressed, FALSE,
+             obj->App, 2, MUIM_Application_ReturnID, EVENT_REMOVE_FILE);
+
+    DoMethod(obj->BTN_ClearPlaylist, MUIM_Notify, MUIA_Pressed, FALSE,
+             obj->App, 2, MUIM_Application_ReturnID, EVENT_CLEAR_PLAYLIST);
+
+    DoMethod(obj->BTN_Play, MUIM_Notify, MUIA_Pressed, FALSE,
+             obj->App, 2, MUIM_Application_ReturnID, EVENT_PLAY);
+
+    DoMethod(obj->BTN_Stop, MUIM_Notify, MUIA_Pressed, FALSE,
+             obj->App, 2, MUIM_Application_ReturnID, EVENT_STOP);
+
+    DoMethod(obj->BTN_Next, MUIM_Notify, MUIA_Pressed, FALSE,
+             obj->App, 2, MUIM_Application_ReturnID, EVENT_NEXT);
+
+    DoMethod(obj->BTN_Prev, MUIM_Notify, MUIA_Pressed, FALSE,
+             obj->App, 2, MUIM_Application_ReturnID, EVENT_PREV);
+
+    DoMethod(obj->CHK_Shuffle, MUIM_Notify, MUIA_Selected, MUIV_EveryTime,
+             obj->App, 2, MUIM_Application_ReturnID, EVENT_SHUFFLE);
+
+    DoMethod(obj->CHK_Repeat, MUIM_Notify, MUIA_Selected, MUIV_EveryTime,
+             obj->App, 2, MUIM_Application_ReturnID, EVENT_REPEAT);
+
+    /* Playlist events */
+    DoMethod(obj->LSV_PlaylistList, MUIM_Notify, MUIA_List_Active, MUIV_EveryTime,
+             obj->App, 2, MUIM_Application_ReturnID, EVENT_PLAYLIST_ACTIVE);
+
+    DoMethod(obj->LSV_PlaylistList, MUIM_Notify, MUIA_Listview_DoubleClick, TRUE,
+             obj->App, 2, MUIM_Application_ReturnID, EVENT_PLAYLIST_DCLICK);
+}
+
+static void CreateWindowConfig(struct ObjApp *obj)
+{
+    Object *group0, *group1, *group2;
+
+    obj->STR_ConfigHost = MUI_NewObject(MUIC_String,
+        MUIA_Frame, MUIV_Frame_String,
+        MUIA_String_MaxLen, 255,
+        TAG_DONE);
+
+    obj->STR_ConfigPassword = MUI_NewObject(MUIC_String,
+        MUIA_Frame, MUIV_Frame_String,
+        MUIA_String_MaxLen, 255,
+        MUIA_String_Secret, TRUE,
+        TAG_DONE);
+
+    obj->BTN_ConfigOK = U64SimpleButton("OK");
+    obj->BTN_ConfigCancel = U64SimpleButton("Cancel");
+
+    group1 = MUI_NewObject(MUIC_Group,
+        MUIA_Frame, MUIV_Frame_Group,
+        MUIA_FrameTitle, "Connection Settings",
+        MUIA_Group_Columns, 2,
+        Child, U64Label("Host:"),
+        Child, obj->STR_ConfigHost,
+        Child, U64Label("Password:"),
+        Child, obj->STR_ConfigPassword,
+        TAG_DONE);
+
+    group2 = MUI_NewObject(MUIC_Group,
+        MUIA_Group_Horiz, TRUE,
+        Child, MUI_NewObject(MUIC_Rectangle, TAG_DONE), /* spacer */
+        Child, obj->BTN_ConfigOK,
+        Child, MUI_NewObject(MUIC_Rectangle, MUIA_Weight, 10, TAG_DONE), /* spacer */
+        Child, obj->BTN_ConfigCancel,
+        Child, MUI_NewObject(MUIC_Rectangle, TAG_DONE), /* spacer */
+        TAG_DONE);
+
+    group0 = MUI_NewObject(MUIC_Group,
+        Child, MUI_NewObject(MUIC_Rectangle, MUIA_Weight, 2, TAG_DONE), /* spacer */
+        Child, group1,
+        Child, MUI_NewObject(MUIC_Rectangle, MUIA_Weight, 2, TAG_DONE), /* spacer */
+        Child, group2,
+        Child, MUI_NewObject(MUIC_Rectangle, MUIA_Weight, 2, TAG_DONE), /* spacer */
+        TAG_DONE);
+
+    obj->WIN_Config = MUI_NewObject(MUIC_Window,
+        MUIA_Window_Title, "Ultimate64 Configuration",
+        MUIA_Window_ID, APP_ID_WIN_CONFIG,
+        MUIA_Window_Width, 400,
+        MUIA_Window_Height, 150,
+        MUIA_Window_CloseGadget, FALSE,
+        WindowContents, group0,
+        TAG_DONE);
+}
+
+static void CreateWindowConfigEvents(struct ObjApp *obj)
+{
+    DoMethod(obj->BTN_ConfigOK, MUIM_Notify, MUIA_Pressed, FALSE,
+             obj->App, 2, MUIM_Application_ReturnID, EVENT_CONFIG_OK);
+
+    DoMethod(obj->BTN_ConfigCancel, MUIM_Notify, MUIA_Pressed, FALSE,
+             obj->App, 2, MUIM_Application_ReturnID, EVENT_CONFIG_CANCEL);
+}
+
+/* Create application */
+static struct ObjApp *CreateApp(void)
+{
+    struct ObjApp *obj;
+
+    U64_DEBUG("Creating App...");
+
+    if ((obj = AllocVec(sizeof(struct ObjApp), MEMF_PUBLIC | MEMF_CLEAR))) {
+        U64_DEBUG("Memory allocated");
+
+        /* Create windows */
+        CreateMenu(obj);
+        CreateWindowMain(obj);
+        CreateWindowConfig(obj);
+
+        if (obj->WIN_Main && obj->WIN_Config) {
+            /* Create Application object */
+            obj->App = MUI_NewObject(MUIC_Application,
+                MUIA_Application_Title, "Ultimate64 SID Player",
+                MUIA_Application_Version, version,
+                MUIA_Application_Copyright, "2025",
+                MUIA_Application_Author, "Marcin Spoczynski",
+                MUIA_Application_Description, "SID Player with Playlist for Ultimate64",
+                MUIA_Application_Base, "U64SIDPLAYER",
+                MUIA_Application_Menustrip, obj->MN_Main,
+                SubWindow, obj->WIN_Main,
+                SubWindow, obj->WIN_Config,
+                TAG_DONE);
+
+            if (obj->App) {
+                U64_DEBUG("Application object created");
+
+                /* Create events */
+                CreateMenuEvents(obj);
+                CreateWindowMainEvents(obj);
+                CreateWindowConfigEvents(obj);
+
+                U64_DEBUG("App creation complete");
+                return obj;
+            }
+        }
+        
+        /* Cleanup on failure */
+        FreeVec(obj);
+    }
+    
+    return NULL;
+}
+
+static void DisposeApp(struct ObjApp *obj)
+{
+    if (obj) {
+        /* Free playlists and song database */
+        FreePlaylists(obj);
+        FreeSongLengthDB(obj);
+        
+        /* Disconnect */
+        if (obj->connection) {
+            U64_Disconnect(obj->connection);
+        }
+        
+        /* Dispose MUI application */
+        if (obj->App) {
+            MUI_DisposeObject(obj->App);
+        }
+        
+        /* Free main structure */
+        FreeVec(obj);
     }
 }
 
-/* Handle playlist double-click */
-static void
-DoPlaylistDoubleClick (struct SIDPlayerData *data)
+/* Memory management functions */
+static void FreePlaylists(struct ObjApp *obj)
 {
-  LONG active;
+    PlaylistEntry *entry = obj->playlist_head;
+    PlaylistEntry *next;
 
-  get (data->playlist_list, MUIA_List_Active, &active);
-
-  DPRINTF ("=== DoPlaylistDoubleClick START ===\n");
-  DPRINTF ("Double-clicked index: %ld\n", active);
-
-  if (active == MUIV_List_Active_Off || active < 0)
-    {
-      DPRINTF ("No valid selection for double-click\n");
-      return;
+    /* Clear the MUI list first to prevent access to freed memory */
+    if (obj->LSV_PlaylistList) {
+        set(obj->LSV_PlaylistList, MUIA_List_Quiet, TRUE);
+        DoMethod(obj->LSV_PlaylistList, MUIM_List_Clear);
+        set(obj->LSV_PlaylistList, MUIA_List_Quiet, FALSE);
     }
 
-  /* Find the entry */
-  PlaylistEntry *entry = data->playlist_head;
-  ULONG i;
-
-  for (i = 0; i < (ULONG)active && entry; i++)
-    {
-      entry = entry->next;
+    /* Free playlist entries */
+    while (entry) {
+        next = entry->next;
+        
+        SafeStrFree(entry->filename);
+        SafeStrFree(entry->title);
+        FreeVec(entry);
+        
+        entry = next;
     }
 
-  if (entry)
-    {
-      DPRINTF ("Double-clicked on: %s\n", FilePart (entry->filename));
-
-      data->current_entry = entry;
-      data->current_index = (ULONG)active;
-
-      /* Update cache immediately */
-      UpdateCurrentSongCache (data);
-
-      /* If playing, start new song immediately */
-      if (data->state == PLAYER_PLAYING)
-        {
-          DPRINTF ("Currently playing - switching to double-clicked song\n");
-          PlayCurrentSong (data);
-        }
-      else
-        {
-          DPRINTF ("Not currently playing - just updating display\n");
-          UpdateCurrentSongDisplay (data);
-        }
-
-      /* Update playlist display to show new current song */
-      UpdatePlaylistDisplay (data);
-    }
-  else
-    {
-      DPRINTF ("ERROR: Could not find double-clicked entry\n");
-    }
-
-  DPRINTF ("=== DoPlaylistDoubleClick END ===\n");
+    obj->playlist_head = NULL;
+    obj->current_entry = NULL;
+    obj->playlist_count = 0;
+    obj->current_index = 0;
 }
 
-/* Simple timer update - called every few seconds */
-static void
-UpdateTimer (struct SIDPlayerData *data)
+static void FreeSongLengthDB(struct ObjApp *obj)
 {
-  if (data->state == PLAYER_PLAYING)
-    {
-      data->timer_counter++;
+    SongLengthEntry *entry = obj->songlength_db;
+    SongLengthEntry *next;
 
-      /* Update every 10 cycles (approximately 1 second) */
-      if (data->timer_counter >= 10)
-        {
-          data->timer_counter = 0;
-          data->current_time++;
-          UpdateCurrentSongDisplay (data);
+    while (entry) {
+        next = entry->next;
 
-          /* Check if current subsong is finished */
-          if (data->current_time >= data->total_time)
-            {
-              /* Check if we have more subsongs in this SID */
-              if (data->current_entry
-                  && data->current_entry->current_subsong + 1
-                         < data->current_entry->subsongs)
-                {
+        if (entry->lengths) {
+            FreeVec(entry->lengths);
+        }
+        FreeVec(entry);
+        
+        entry = next;
+    }
 
-                  DPRINTF ("Auto-advancing to next subsong: %d -> %d\n",
-                           data->current_entry->current_subsong,
-                           data->current_entry->current_subsong + 1);
+    obj->songlength_db = NULL;
+}
 
-                  /* Move to next subsong */
-                  data->current_entry->current_subsong++;
+/* Helper functions */
+static BOOL MD5Compare(const UBYTE hash1[MD5_HASH_SIZE], const UBYTE hash2[MD5_HASH_SIZE])
+{
+    return (memcmp(hash1, hash2, MD5_HASH_SIZE) == 0);
+}
 
-                  /* Update duration for new subsong */
-                  data->current_entry->duration
-                      = FindSongLength (data, data->current_entry->md5,
-                                        data->current_entry->current_subsong);
-                  if (data->current_entry->duration == 0)
-                    {
-                      data->current_entry->duration = DEFAULT_SONG_LENGTH;
+static ULONG FindSongLength(struct ObjApp *obj, const UBYTE md5[MD5_HASH_SIZE], UWORD subsong)
+{
+    SongLengthEntry *entry = obj->songlength_db;
+
+    while (entry) {
+        if (MD5Compare(entry->md5, md5)) {
+            if (subsong < entry->num_subsongs) {
+                return entry->lengths[subsong];
+            }
+            break;
+        }
+        entry = entry->next;
+    }
+
+    return DEFAULT_SONG_LENGTH;
+}
+
+static void APP_UpdateCurrentSongCache(void)
+{
+    if (!objApp->current_entry) {
+        current_song_cache.cache_valid = FALSE;
+        return;
+    }
+
+    /* Disable interrupts while updating cache to prevent corruption */
+    Forbid();
+
+    current_song_cache.cached_subsongs = objApp->current_entry->subsongs;
+    current_song_cache.cached_current = objApp->current_entry->current_subsong;
+    current_song_cache.cached_duration = objApp->current_entry->duration;
+
+    if (objApp->current_entry->title) {
+        strncpy(current_song_cache.cached_title, objApp->current_entry->title,
+                sizeof(current_song_cache.cached_title) - 1);
+        current_song_cache.cached_title[sizeof(current_song_cache.cached_title) - 1] = '\0';
+    } else {
+        current_song_cache.cached_title[0] = '\0';
+    }
+
+    if (objApp->current_entry->filename) {
+        strncpy(current_song_cache.cached_filename, objApp->current_entry->filename,
+                sizeof(current_song_cache.cached_filename) - 1);
+        current_song_cache.cached_filename[sizeof(current_song_cache.cached_filename) - 1] = '\0';
+    } else {
+        current_song_cache.cached_filename[0] = '\0';
+    }
+
+    current_song_cache.cache_valid = TRUE;
+
+    Permit();
+}
+
+/* Application functions implementation */
+static BOOL APP_Init(void)
+{
+    /* Initialize Ultimate64 library */
+    if (!U64_InitLibrary()) {
+        U64_DEBUG("Failed to initialize Ultimate64 library");
+        return FALSE;
+    }
+    
+    /* Load configuration */
+    LoadConfig(objApp);
+    
+    /* Initialize random seed */
+    srand(time(NULL));
+    
+    return TRUE;
+}
+
+static void APP_UpdateStatus(CONST_STRPTR text)
+{
+    if (objApp && objApp->TXT_Status) {
+        set(objApp->TXT_Status, MUIA_Text_Contents, text);
+    }
+}
+
+static void
+APP_UpdatePlaylistDisplay(void)
+{
+    PlaylistEntry *entry;
+    ULONG i;
+
+    if (!objApp || !objApp->LSV_PlaylistList) return;
+
+    U64_DEBUG("=== APP_UpdatePlaylistDisplay FIXED START ===");
+
+    /* Clear list first */
+    set(objApp->LSV_PlaylistList, MUIA_List_Quiet, TRUE);
+    DoMethod(objApp->LSV_PlaylistList, MUIM_List_Clear);
+
+    if (objApp->playlist_count == 0) {
+        set(objApp->LSV_PlaylistList, MUIA_List_Quiet, FALSE);
+        U64_DEBUG("Playlist is empty");
+        return;
+    }
+
+    /* Add entries one by one to the list */
+    entry = objApp->playlist_head;
+    for (i = 0; i < objApp->playlist_count && entry; i++) {
+        char *basename = FilePart(entry->filename);
+
+        U64_DEBUG("=== PROCESSING ENTRY %d ===", (int)i);
+        U64_DEBUG("Entry address: %p", entry);
+        U64_DEBUG("Filename: %s", basename);
+
+        /* Read values safely into local int variables */
+        int entry_subsongs = (int)entry->subsongs;
+        int entry_current = (int)entry->current_subsong;
+        int entry_duration = (int)entry->duration;
+
+        U64_DEBUG("Raw entry values: subsongs=%d, current=%d, duration=%d",
+                  entry_subsongs, entry_current, entry_duration);
+
+        /* Validate values */
+        if (entry_subsongs <= 0) {
+            entry_subsongs = 1;
+            U64_DEBUG("WARNING: Fixed subsongs to 1");
+        }
+        if (entry_current < 0 || entry_current >= entry_subsongs) {
+            entry_current = 0;
+            U64_DEBUG("WARNING: Fixed current subsong to 0");
+        }
+
+        /* Remove .sid extension for cleaner display */
+        char clean_name[256];
+        strncpy(clean_name, basename, sizeof(clean_name) - 1);
+        clean_name[sizeof(clean_name) - 1] = '\0';
+        char *dot = strrchr(clean_name, '.');
+        if (dot && stricmp(dot, ".sid") == 0) {
+            *dot = '\0';
+        }
+
+        /* Use title if available, otherwise use cleaned filename */
+        char *display_name;
+        if (entry->title && strlen(entry->title) > 0) {
+            display_name = entry->title;
+        } else {
+            display_name = clean_name;
+        }
+
+        /* Allocate display string on heap */
+        STRPTR list_string = AllocVec(512, MEMF_PUBLIC | MEMF_CLEAR);
+        if (!list_string) {
+            U64_DEBUG("ERROR: Failed to allocate display string");
+            entry = entry->next;
+            continue;
+        }
+
+        /* Build display string manually without sprintf */
+        strcpy(list_string, display_name);
+
+        if (entry_subsongs > 1) {
+            /* Add subsong info: " [1/12]" */
+            strcat(list_string, " [");
+
+            /* Add current subsong number (1-based) */
+            int display_current = entry_current + 1;
+            if (display_current < 10) {
+                char c = '0' + display_current;
+                strncat(list_string, &c, 1);
+            } else if (display_current < 100) {
+                char temp[3];
+                temp[0] = '0' + (display_current / 10);
+                temp[1] = '0' + (display_current % 10);
+                temp[2] = '\0';
+                strcat(list_string, temp);
+            } else {
+                strcat(list_string, "99+"); /* Fallback for very high numbers */
+            }
+
+            strcat(list_string, "/");
+
+            /* Add total subsongs */
+            if (entry_subsongs < 10) {
+                char c = '0' + entry_subsongs;
+                strncat(list_string, &c, 1);
+            } else if (entry_subsongs < 100) {
+                char temp[3];
+                temp[0] = '0' + (entry_subsongs / 10);
+                temp[1] = '0' + (entry_subsongs % 10);
+                temp[2] = '\0';
+                strcat(list_string, temp);
+            } else {
+                strcat(list_string, "99+"); /* Fallback */
+            }
+
+            strcat(list_string, "] ");
+
+            /* Get duration for current subsong */
+            ULONG current_duration = FindSongLength(objApp, entry->md5, entry_current);
+            if (current_duration == 0) {
+                current_duration = (ULONG)entry_duration;
+                if (current_duration == 0) {
+                    current_duration = DEFAULT_SONG_LENGTH;
+                }
+            }
+
+            /* Add time manually */
+            int minutes = (int)(current_duration / 60);
+            int seconds = (int)(current_duration % 60);
+
+            /* Add minutes */
+            if (minutes < 10) {
+                char c = '0' + minutes;
+                strncat(list_string, &c, 1);
+            } else {
+                char temp[3];
+                temp[0] = '0' + (minutes / 10);
+                temp[1] = '0' + (minutes % 10);
+                temp[2] = '\0';
+                strcat(list_string, temp);
+            }
+
+            strcat(list_string, ":");
+
+            /* Add seconds (always 2 digits) */
+            char temp[3];
+            temp[0] = '0' + (seconds / 10);
+            temp[1] = '0' + (seconds % 10);
+            temp[2] = '\0';
+            strcat(list_string, temp);
+        } else {
+            /* Single subsong: show just time */
+            ULONG duration = (ULONG)entry_duration;
+            if (duration == 0) {
+                duration = FindSongLength(objApp, entry->md5, 0);
+                if (duration == 0) {
+                    duration = DEFAULT_SONG_LENGTH;
+                }
+            }
+
+            strcat(list_string, " - ");
+
+            /* Add time manually */
+            int minutes = (int)(duration / 60);
+            int seconds = (int)(duration % 60);
+
+            /* Add minutes */
+            if (minutes < 10) {
+                char c = '0' + minutes;
+                strncat(list_string, &c, 1);
+            } else {
+                char temp[3];
+                temp[0] = '0' + (minutes / 10);
+                temp[1] = '0' + (minutes % 10);
+                temp[2] = '\0';
+                strcat(list_string, temp);
+            }
+
+            strcat(list_string, ":");
+
+            /* Add seconds (always 2 digits) */
+            char temp[3];
+            temp[0] = '0' + (seconds / 10);
+            temp[1] = '0' + (seconds % 10);
+            temp[2] = '\0';
+            strcat(list_string, temp);
+        }
+
+        U64_DEBUG("Final display string: '%s'", list_string);
+
+        /* Add to MUI list */
+        DoMethod(objApp->LSV_PlaylistList, MUIM_List_InsertSingle, list_string,
+                 MUIV_List_Insert_Bottom);
+
+        U64_DEBUG("=== END ENTRY %d ===", (int)i);
+        entry = entry->next;
+    }
+
+    set(objApp->LSV_PlaylistList, MUIA_List_Quiet, FALSE);
+
+    /* Highlight current entry */
+    if (objApp->current_entry) {
+        set(objApp->LSV_PlaylistList, MUIA_List_Active, objApp->current_index);
+    }
+
+    U64_DEBUG("=== APP_UpdatePlaylistDisplay FIXED END ===");
+}
+
+
+static void
+APP_UpdateCurrentSongDisplay(void)
+{
+    char song_str[256];
+    
+    if (!objApp) return;
+
+    U64_DEBUG("=== APP_UpdateCurrentSongDisplay FIXED START ===");
+
+    if (!objApp->current_entry || !current_song_cache.cache_valid) {
+        set(objApp->TXT_CurrentSong, MUIA_Text_Contents, "No song loaded");
+        set(objApp->TXT_CurrentTime, MUIA_Text_Contents, "0:00");
+        set(objApp->TXT_TotalTime, MUIA_Text_Contents, "0:00");
+        set(objApp->TXT_SubsongInfo, MUIA_Text_Contents, "");
+        set(objApp->GAU_Progress, MUIA_Gauge_Current, 0);
+        return;
+    }
+
+    /* Use cached values */
+    int subsongs = (int)current_song_cache.cached_subsongs;
+    int current = (int)current_song_cache.cached_current;
+
+    U64_DEBUG("Values: subsongs=%d, current=%d", subsongs, current);
+    U64_DEBUG("Times: current_time=%lu, total_time=%lu",
+              (unsigned long)objApp->current_time, (unsigned long)objApp->total_time);
+
+    /* Song title */
+    if (current_song_cache.cached_title[0] != '\0') {
+        strcpy(song_str, current_song_cache.cached_title);
+    } else {
+        char *basename = FilePart(current_song_cache.cached_filename);
+        strcpy(song_str, basename);
+        char *dot = strrchr(song_str, '.');
+        if (dot && stricmp(dot, ".sid") == 0) {
+            *dot = '\0';
+        }
+    }
+    set(objApp->TXT_CurrentSong, MUIA_Text_Contents, song_str);
+
+    /* Current time string */
+    static char current_time_str[16];
+    current_time_str[0] = '\0';
+
+    int current_minutes = (int)(objApp->current_time / 60);
+    int current_seconds = (int)(objApp->current_time % 60);
+
+    /* Build current time manually */
+    if (current_minutes < 10) {
+        char c = '0' + current_minutes;
+        strncat(current_time_str, &c, 1);
+    } else {
+        char temp[3];
+        temp[0] = '0' + (current_minutes / 10);
+        temp[1] = '0' + (current_minutes % 10);
+        temp[2] = '\0';
+        strcat(current_time_str, temp);
+    }
+
+    strcat(current_time_str, ":");
+
+    /* Add seconds (always 2 digits) */
+    char temp[3];
+    temp[0] = '0' + (current_seconds / 10);
+    temp[1] = '0' + (current_seconds % 10);
+    temp[2] = '\0';
+    strcat(current_time_str, temp);
+
+    U64_DEBUG("Built current time string: '%s'", current_time_str);
+    set(objApp->TXT_CurrentTime, MUIA_Text_Contents, current_time_str);
+
+    /* Total time string */
+    static char total_time_str[16];
+    total_time_str[0] = '\0';
+
+    int total_minutes = (int)(objApp->total_time / 60);
+    int total_seconds = (int)(objApp->total_time % 60);
+
+    /* Build total time manually */
+    if (total_minutes < 10) {
+        char c = '0' + total_minutes;
+        strncat(total_time_str, &c, 1);
+    } else {
+        char temp2[3];
+        temp2[0] = '0' + (total_minutes / 10);
+        temp2[1] = '0' + (total_minutes % 10);
+        temp2[2] = '\0';
+        strcat(total_time_str, temp2);
+    }
+
+    strcat(total_time_str, ":");
+
+    /* Add seconds (always 2 digits) */
+    char temp3[3];
+    temp3[0] = '0' + (total_seconds / 10);
+    temp3[1] = '0' + (total_seconds % 10);
+    temp3[2] = '\0';
+    strcat(total_time_str, temp3);
+
+    U64_DEBUG("Built total time string: '%s'", total_time_str);
+    set(objApp->TXT_TotalTime, MUIA_Text_Contents, total_time_str);
+
+    /* Subsong info - build manually */
+    if (subsongs > 1) {
+        /* Use static string to avoid stack issues */
+        static char subsong_str[64];
+        subsong_str[0] = '\0';
+
+        strcat(subsong_str, "Subsong ");
+
+        /* Add current subsong number (1-based) */
+        int display_current = current + 1;
+        if (display_current < 10) {
+            char c = '0' + display_current;
+            strncat(subsong_str, &c, 1);
+        } else if (display_current < 100) {
+            char temp4[3];
+            temp4[0] = '0' + (display_current / 10);
+            temp4[1] = '0' + (display_current % 10);
+            temp4[2] = '\0';
+            strcat(subsong_str, temp4);
+        }
+
+        strcat(subsong_str, " of ");
+
+        /* Add total subsongs */
+        if (subsongs < 10) {
+            char c = '0' + subsongs;
+            strncat(subsong_str, &c, 1);
+        } else if (subsongs < 100) {
+            char temp5[3];
+            temp5[0] = '0' + (subsongs / 10);
+            temp5[1] = '0' + (subsongs % 10);
+            temp5[2] = '\0';
+            strcat(subsong_str, temp5);
+        }
+
+        U64_DEBUG("Built subsong string: '%s'", subsong_str);
+        set(objApp->TXT_SubsongInfo, MUIA_Text_Contents, subsong_str);
+    } else {
+        set(objApp->TXT_SubsongInfo, MUIA_Text_Contents, "");
+    }
+
+    /* Progress gauge */
+    if (objApp->total_time > 0) {
+        ULONG progress = (objApp->current_time * 100) / objApp->total_time;
+        if (progress > 100) progress = 100;
+        set(objApp->GAU_Progress, MUIA_Gauge_Current, progress);
+        U64_DEBUG("Progress: %lu%%", (unsigned long)progress);
+    } else {
+        set(objApp->GAU_Progress, MUIA_Gauge_Current, 0);
+        U64_DEBUG("No total time, progress = 0");
+    }
+
+    U64_DEBUG("=== APP_UpdateCurrentSongDisplay FIXED END ===");
+}
+static BOOL AddPlaylistEntry(struct ObjApp *obj, CONST_STRPTR filename)
+{
+    UBYTE *file_data;
+    ULONG file_size;
+    PlaylistEntry *entry;
+    PlaylistEntry *last;
+
+    /* Load file to calculate MD5 and parse header */
+    if (!LoadFile(filename, &file_data, &file_size)) {
+        return FALSE;
+    }
+
+    /* Create new entry */
+    entry = AllocVec(sizeof(PlaylistEntry), MEMF_PUBLIC | MEMF_CLEAR);
+    if (!entry) {
+        FreeVec(file_data);
+        return FALSE;
+    }
+
+    /* Copy filename */
+    entry->filename = SafeStrDup(filename);
+    if (!entry->filename) {
+        FreeVec(entry);
+        FreeVec(file_data);
+        return FALSE;
+    }
+
+    /* Calculate MD5 */
+    CalculateMD5(file_data, file_size, entry->md5);
+
+    /* Parse SID header for basic subsong count */
+    UWORD header_subsongs = ParseSIDSubsongs(file_data, file_size);
+    entry->subsongs = header_subsongs;
+    entry->current_subsong = 0; /* Always start with first subsong */
+
+    /* Check if we have this SID in our songlength database */
+    if (obj->songlength_db) {
+        SongLengthEntry *db_entry = obj->songlength_db;
+
+        while (db_entry) {
+            if (MD5Compare(db_entry->md5, entry->md5)) {
+                U64_DEBUG("Found %s in database: %d subsongs (header said %d)",
+                          FilePart(filename), db_entry->num_subsongs, header_subsongs);
+
+                /* Use database value if it's larger and reasonable */
+                if (db_entry->num_subsongs > header_subsongs
+                    && db_entry->num_subsongs <= 256) {
+                    entry->subsongs = db_entry->num_subsongs;
+                }
+                break;
+            }
+            db_entry = db_entry->next;
+        }
+    }
+
+    /* Extract title */
+    entry->title = ExtractSIDTitle(file_data, file_size);
+    if (!entry->title) {
+        /* Use filename as title */
+        STRPTR basename = FilePart(filename);
+        entry->title = SafeStrDup(basename);
+    }
+
+    /* Find song length for the first subsong (subsong 0) */
+    entry->duration = FindSongLength(obj, entry->md5, 0);
+    if (entry->duration == 0) {
+        entry->duration = DEFAULT_SONG_LENGTH;
+    }
+
+    FreeVec(file_data);
+
+    /* Add to playlist */
+    if (!obj->playlist_head) {
+        obj->playlist_head = entry;
+    } else {
+        last = obj->playlist_head;
+        while (last->next) {
+            last = last->next;
+        }
+        last->next = entry;
+    }
+
+    obj->playlist_count++;
+    return TRUE;
+}
+
+static BOOL
+PlayCurrentSong(struct ObjApp *obj)
+{
+    UBYTE *file_data;
+    ULONG file_size;
+    STRPTR error_details = NULL;
+    LONG result;
+
+    if (!obj->connection || !obj->current_entry) {
+        return FALSE;
+    }
+
+    U64_DEBUG("=== PlayCurrentSong FIXED START ===");
+
+    /* Update cache BEFORE doing anything else */
+    APP_UpdateCurrentSongCache();
+
+    /* Use cached values for safety */
+    UWORD current_subsong = current_song_cache.cached_current;
+    UWORD total_subsongs = current_song_cache.cached_subsongs;
+
+    /* Ultimate64 expects subsong numbers starting from 1, not 0 */
+    UBYTE ultimate64_subsong = current_subsong + 1;
+
+    U64_DEBUG("PlayCurrentSong: Playing subsong %d (0-based) = %d (Ultimate64 1-based)",
+              current_subsong, ultimate64_subsong);
+
+    /* Load file */
+    if (!LoadFile(obj->current_entry->filename, &file_data, &file_size)) {
+        APP_UpdateStatus("Failed to load SID file");
+        return FALSE;
+    }
+
+    /* Play SID with specific subsong (1-based for Ultimate64) */
+    result = U64_PlaySID(obj->connection, file_data, file_size, ultimate64_subsong, &error_details);
+
+    FreeVec(file_data);
+
+    if (result != U64_OK) {
+        char error_msg[512];
+        /* Build error message manually */
+        strcpy(error_msg, "SID playback failed: ");
+        if (error_details) {
+            strcat(error_msg, error_details);
+        } else {
+            strcat(error_msg, U64_GetErrorString(result));
+        }
+        APP_UpdateStatus(error_msg);
+
+        if (error_details) {
+            FreeVec(error_details);
+        }
+        return FALSE;
+    }
+
+    if (error_details) {
+        FreeVec(error_details);
+    }
+
+    /* Set proper total time for current subsong */
+    obj->state = PLAYER_PLAYING;
+    obj->current_time = 0;
+
+    /* Get duration for the specific subsong being played */
+    obj->total_time = FindSongLength(obj, obj->current_entry->md5, current_subsong);
+
+    U64_DEBUG("Set total_time to %lu seconds for subsong %d",
+              (unsigned long)obj->total_time, current_subsong);
+
+    obj->timer_counter = 0;
+
+    /* Update display using cached values */
+    APP_UpdateCurrentSongDisplay();
+
+    char *basename = FilePart(current_song_cache.cached_filename);
+
+    /* Use static string to avoid stack corruption */
+    static char status_msg[256];
+    strcpy(status_msg, "Playing ");
+    strcat(status_msg, basename);
+    strcat(status_msg, " [");
+
+    /* Add current subsong (1-based) manually */
+    int display_current = (int)current_subsong + 1;
+    if (display_current < 10) {
+        char c = '0' + display_current;
+        strncat(status_msg, &c, 1);
+    } else if (display_current < 100) {
+        char temp[3];
+        temp[0] = '0' + (display_current / 10);
+        temp[1] = '0' + (display_current % 10);
+        temp[2] = '\0';
+        strcat(status_msg, temp);
+    }
+
+    strcat(status_msg, "/");
+
+    /* Add total subsongs manually */
+    int display_total = (int)total_subsongs;
+    if (display_total < 10) {
+        char c = '0' + display_total;
+        strncat(status_msg, &c, 1);
+    } else if (display_total < 100) {
+        char temp[3];
+        temp[0] = '0' + (display_total / 10);
+        temp[1] = '0' + (display_total % 10);
+        temp[2] = '\0';
+        strcat(status_msg, temp);
+    }
+
+    strcat(status_msg, "]");
+
+    U64_DEBUG("Status message built: '%s'", status_msg);
+    APP_UpdateStatus(status_msg);
+
+    U64_DEBUG("=== PlayCurrentSong FIXED END ===");
+    return TRUE;
+}
+
+static BOOL APP_Connect(void)
+{
+    if (!objApp) return FALSE;
+
+    if (objApp->connection) {
+        /* Disconnect */
+        if (objApp->state == PLAYER_PLAYING) {
+            objApp->state = PLAYER_STOPPED;
+        }
+
+        U64_Disconnect(objApp->connection);
+        objApp->connection = NULL;
+
+        set(objApp->TXT_ConnectionStatus, MUIA_Text_Contents, "Disconnected");
+        set(objApp->BTN_Connect, MUIA_Text_Contents, "Connect");
+        APP_UpdateStatus("Disconnected");
+
+        /* Disable controls */
+        set(objApp->BTN_Play, MUIA_Disabled, TRUE);
+        set(objApp->BTN_Stop, MUIA_Disabled, TRUE);
+        set(objApp->BTN_Next, MUIA_Disabled, TRUE);
+        set(objApp->BTN_Prev, MUIA_Disabled, TRUE);
+    } else {
+        /* Check if configuration is complete */
+        if (strlen(objApp->host) == 0) {
+            APP_UpdateStatus("Please configure connection settings first");
+            APP_ConfigOpen();
+            return FALSE;
+        }
+
+        /* Connect */
+        objApp->connection = U64_Connect(objApp->host,
+            strlen(objApp->password) > 0 ? objApp->password : NULL);
+
+        if (objApp->connection) {
+            char status[256];
+            sprintf(status, "Connected to %s", objApp->host);
+            set(objApp->TXT_ConnectionStatus, MUIA_Text_Contents, "Connected");
+            set(objApp->BTN_Connect, MUIA_Text_Contents, "Disconnect");
+            APP_UpdateStatus(status);
+
+            /* Enable controls */
+            set(objApp->BTN_Play, MUIA_Disabled, FALSE);
+            set(objApp->BTN_Stop, MUIA_Disabled, FALSE);
+            set(objApp->BTN_Next, MUIA_Disabled, FALSE);
+            set(objApp->BTN_Prev, MUIA_Disabled, FALSE);
+        } else {
+            set(objApp->TXT_ConnectionStatus, MUIA_Text_Contents, "Disconnected");
+            APP_UpdateStatus("Connection failed");
+        }
+    }
+
+    return TRUE;
+}
+
+static BOOL APP_AddFiles(void)
+{
+    struct FileRequester *req = NULL;
+    BOOL success = FALSE;
+    ULONG added = 0;
+    BOOL use_remembered_dir = FALSE;
+
+    if (!AslBase) {
+        APP_UpdateStatus("ASL library not available");
+        return FALSE;
+    }
+
+    U64_DEBUG("=== APP_AddFiles START (safe version) ===");
+
+    BOOL main_window_open = FALSE;
+    BOOL config_window_open = FALSE;
+    
+    get(objApp->WIN_Main, MUIA_Window_Open, &main_window_open);
+    if (objApp->WIN_Config) {
+        get(objApp->WIN_Config, MUIA_Window_Open, &config_window_open);
+    }
+
+    U64_DEBUG("Window states - Main: %s, Config: %s", 
+              main_window_open ? "OPEN" : "CLOSED",
+              config_window_open ? "OPEN" : "CLOSED");
+
+    /* Close config window first if open */
+    if (config_window_open) {
+        U64_DEBUG("Closing config window");
+        set(objApp->WIN_Config, MUIA_Window_Open, FALSE);
+        Delay(10);
+    }
+    
+    /* Close main window */
+    if (main_window_open) {
+        U64_DEBUG("Closing main window");
+        set(objApp->WIN_Main, MUIA_Window_Open, FALSE);
+        Delay(20); /* Longer delay for older systems */
+        
+        /* Process any pending window messages */
+        ULONG signals;
+        int cleanup_cycles = 0;
+        while (cleanup_cycles < 5) {
+            DoMethod(objApp->App, MUIM_Application_Input, &signals);
+            if (signals == 0) break;
+            cleanup_cycles++;
+            Delay(3);
+        }
+    }
+
+    /* Check if we have a remembered directory */
+    if (strlen(objApp->last_sid_dir) > 0) {
+        BPTR lock = Lock(objApp->last_sid_dir, ACCESS_READ);
+        if (lock) {
+            UnLock(lock);
+            use_remembered_dir = TRUE;
+            U64_DEBUG("Directory valid: %s", objApp->last_sid_dir);
+        } else {
+            U64_DEBUG("Directory invalid, clearing: %s", objApp->last_sid_dir);
+            objApp->last_sid_dir[0] = '\0';
+        }
+    }
+
+    /* Create ASL requester with proper error handling */
+    U64_DEBUG("Creating ASL requester");
+    
+    if (use_remembered_dir) {
+        req = AllocAslRequestTags(ASL_FileRequest,
+            ASLFR_TitleText, "Select SID files to add",
+            ASLFR_DoPatterns, TRUE,
+            ASLFR_InitialPattern, "#?.sid",
+            ASLFR_DoMultiSelect, TRUE,
+            ASLFR_InitialDrawer, objApp->last_sid_dir,
+            ASLFR_RejectIcons, TRUE,
+            TAG_DONE);
+    } else {
+        req = AllocAslRequestTags(ASL_FileRequest,
+            ASLFR_TitleText, "Select SID files to add",
+            ASLFR_DoPatterns, TRUE,
+            ASLFR_InitialPattern, "#?.sid",
+            ASLFR_DoMultiSelect, TRUE,
+            ASLFR_RejectIcons, TRUE,
+            TAG_DONE);
+    }
+
+    if (!req) {
+        U64_DEBUG("Failed to create ASL requester");
+        APP_UpdateStatus("Failed to create file requester");
+        goto restore_windows;
+    }
+
+    U64_DEBUG("ASL requester created successfully");
+
+    /* Show the ASL requester */
+    U64_DEBUG("Showing ASL requester");
+    success = AslRequest(req, NULL);
+    U64_DEBUG("ASL result: %s", success ? "SUCCESS" : "CANCELLED/FAILED");
+
+    /* Process the results if successful */
+    if (success) {
+        struct WBArg *args = req->rf_ArgList;
+        LONG num_args = req->rf_NumArgs;
+
+        U64_DEBUG("ASL returned %d files", (int)num_args);
+
+        if (args && num_args > 0 && num_args <= 1000) {
+            /* Remember directory */
+            if (req->rf_Dir && strlen(req->rf_Dir) > 0) {
+                U64_DEBUG("Remembering directory: %s", req->rf_Dir);
+                strncpy(objApp->last_sid_dir, req->rf_Dir, sizeof(objApp->last_sid_dir) - 1);
+                objApp->last_sid_dir[sizeof(objApp->last_sid_dir) - 1] = '\0';
+            }
+
+            /* Process each selected file */
+            for (LONG i = 0; i < num_args; i++) {
+                char filename[512];
+                
+                U64_DEBUG("Processing file %d: wa_Lock=%p, wa_Name=%s", 
+                          (int)i, args[i].wa_Lock, args[i].wa_Name ? args[i].wa_Name : "NULL");
+                
+                if (args[i].wa_Lock && args[i].wa_Name) {
+                    if (NameFromLock(args[i].wa_Lock, filename, sizeof(filename) - 32)) {
+                        if (AddPart(filename, args[i].wa_Name, sizeof(filename))) {
+                            U64_DEBUG("Attempting to add: %s", filename);
+                            if (AddPlaylistEntry(objApp, filename)) {
+                                added++;
+                                U64_DEBUG("Successfully added file %d: %s", (int)i, filename);
+                            } else {
+                                U64_DEBUG("Failed to add file %d: %s", (int)i, filename);
+                            }
+                        }
+                    }
+                }
+                
+                /* Yield CPU periodically for older systems */
+                if ((i % 10) == 0) {
+                    Delay(2);
+                }
+            }
+        }
+
+        U64_DEBUG("Total files processed: %u added", (unsigned int)added);
+    }
+
+    /* Free ASL requester */
+    if (req) {
+        U64_DEBUG("Freeing ASL requester");
+        FreeAslRequest(req);
+        req = NULL;
+    }
+
+restore_windows:
+    /* Restore windows in reverse order with proper delays */
+    U64_DEBUG("Restoring windows");
+    
+    if (main_window_open) {
+        Delay(15); /* Extra delay before restoring on older systems */
+        set(objApp->WIN_Main, MUIA_Window_Open, TRUE);
+        DoMethod(objApp->WIN_Main, MUIM_Window_ToFront);
+        
+        /* Process restoration messages */
+        ULONG signals;
+        int restore_cycles = 0;
+        while (restore_cycles < 5) {
+            DoMethod(objApp->App, MUIM_Application_Input, &signals);
+            restore_cycles++;
+            Delay(3);
+        }
+    }
+    
+    if (config_window_open) {
+        Delay(5);
+        set(objApp->WIN_Config, MUIA_Window_Open, TRUE);
+    }
+
+    /* Update displays if we added files */
+    if (success && added > 0) {
+        U64_DEBUG("Updating displays");
+        APP_UpdatePlaylistDisplay();
+        
+        /* Set first entry as current if none selected */
+        if (!objApp->current_entry && objApp->playlist_head) {
+            U64_DEBUG("Setting first entry as current");
+            objApp->current_entry = objApp->playlist_head;
+            objApp->current_index = 0;
+            objApp->current_entry->duration = FindSongLength(objApp, objApp->current_entry->md5, 
+                                                             objApp->current_entry->current_subsong);
+            if (objApp->current_entry->duration == 0) {
+                objApp->current_entry->duration = DEFAULT_SONG_LENGTH;
+            }
+            APP_UpdateCurrentSongCache();
+            APP_UpdateCurrentSongDisplay();
+        }
+
+        char status_msg[256];
+        sprintf(status_msg, "Added %u files to playlist", (unsigned int)added);
+        APP_UpdateStatus(status_msg);
+    } else if (success) {
+        APP_UpdateStatus("No valid SID files found");
+    } else {
+        APP_UpdateStatus("File selection cancelled");
+    }
+
+    U64_DEBUG("=== APP_AddFiles END ===");
+    return success;
+}
+
+static BOOL APP_RemoveFile(void)
+{
+    LONG active;
+
+    if (!objApp) return FALSE;
+
+    get(objApp->LSV_PlaylistList, MUIA_List_Active, &active);
+
+    if (active == MUIV_List_Active_Off || active < 0) {
+        APP_UpdateStatus("No file selected");
+        return FALSE;
+    }
+
+    /* Find entry to remove */
+    PlaylistEntry *entry = objApp->playlist_head;
+    PlaylistEntry *prev = NULL;
+
+    for (ULONG i = 0; i < (ULONG)active && entry; i++) {
+        prev = entry;
+        entry = entry->next;
+    }
+
+    if (!entry) {
+        return FALSE;
+    }
+
+    /* Stop playback if removing current song */
+    if (entry == objApp->current_entry) {
+        if (objApp->state == PLAYER_PLAYING) {
+            objApp->state = PLAYER_STOPPED;
+        }
+        objApp->current_entry = entry->next;
+        if (!objApp->current_entry && objApp->playlist_head != entry) {
+            objApp->current_entry = objApp->playlist_head;
+            objApp->current_index = 0;
+        }
+    }
+
+    /* Remove from list */
+    if (prev) {
+        prev->next = entry->next;
+    } else {
+        objApp->playlist_head = entry->next;
+    }
+
+    /* Adjust current index */
+    if (objApp->current_index > (ULONG)active) {
+        objApp->current_index--;
+    }
+
+    /* Free entry */
+    SafeStrFree(entry->filename);
+    SafeStrFree(entry->title);
+    FreeVec(entry);
+
+    objApp->playlist_count--;
+
+    APP_UpdatePlaylistDisplay();
+    APP_UpdateCurrentSongDisplay();
+    APP_UpdateStatus("File removed from playlist");
+
+    return TRUE;
+}
+
+static BOOL APP_ClearPlaylist(void)
+{
+    if (!objApp) return FALSE;
+
+    /* Stop playback */
+    if (objApp->state == PLAYER_PLAYING) {
+        objApp->state = PLAYER_STOPPED;
+    }
+
+    FreePlaylists(objApp);
+    APP_UpdatePlaylistDisplay();
+    APP_UpdateCurrentSongDisplay();
+    APP_UpdateStatus("Playlist cleared");
+
+    return TRUE;
+}
+
+static BOOL APP_Play(void)
+{
+    LONG selected_index;
+
+    if (!objApp) return FALSE;
+
+    /* Check if we have a playlist */
+    if (objApp->playlist_count == 0) {
+        APP_UpdateStatus("No songs in playlist");
+        return FALSE;
+    }
+
+    /* Get currently selected item in playlist */
+    get(objApp->LSV_PlaylistList, MUIA_List_Active, &selected_index);
+
+    /* If a song is selected in the playlist, use that */
+    if (selected_index != MUIV_List_Active_Off && selected_index >= 0
+        && selected_index < (LONG)objApp->playlist_count) {
+
+        /* Find the selected entry */
+        PlaylistEntry *entry = objApp->playlist_head;
+        for (ULONG i = 0; i < (ULONG)selected_index && entry; i++) {
+            entry = entry->next;
+        }
+
+        if (entry) {
+            objApp->current_entry = entry;
+            objApp->current_index = (ULONG)selected_index;
+            APP_UpdateCurrentSongCache();
+            
+            if (PlayCurrentSong(objApp)) {
+                APP_UpdatePlaylistDisplay();
+                return TRUE;
+            }
+        }
+    }
+    /* If no song is selected but we have a current entry, play it */
+    else if (objApp->current_entry) {
+        APP_UpdateCurrentSongCache();
+        return PlayCurrentSong(objApp);
+    }
+    /* If no current entry, default to first song */
+    else if (objApp->playlist_head) {
+        objApp->current_entry = objApp->playlist_head;
+        objApp->current_index = 0;
+        set(objApp->LSV_PlaylistList, MUIA_List_Active, 0);
+        APP_UpdateCurrentSongCache();
+        
+        if (PlayCurrentSong(objApp)) {
+            APP_UpdatePlaylistDisplay();
+            return TRUE;
+        }
+    }
+
+    APP_UpdateStatus("Failed to start playback");
+    return FALSE;
+}
+
+static BOOL APP_Stop(void)
+{
+    if (!objApp) return FALSE;
+
+    if (objApp->state == PLAYER_PLAYING) {
+        objApp->state = PLAYER_STOPPED;
+        objApp->current_time = 0;
+        APP_UpdateCurrentSongDisplay();
+        APP_UpdateStatus("Stopped");
+    }
+
+    return TRUE;
+}
+
+static BOOL APP_Next(void)
+{
+    if (!objApp || !objApp->current_entry) {
+        return FALSE;
+    }
+
+    /* Check if we have more subsongs */
+    if (objApp->current_entry->current_subsong + 1 < objApp->current_entry->subsongs) {
+        objApp->current_entry->current_subsong++;
+        objApp->current_entry->duration = FindSongLength(objApp, objApp->current_entry->md5, 
+                                                         objApp->current_entry->current_subsong);
+        if (objApp->current_entry->duration == 0) {
+            objApp->current_entry->duration = DEFAULT_SONG_LENGTH;
+        }
+
+        APP_UpdateCurrentSongCache();
+        APP_UpdatePlaylistDisplay();
+        
+        if (objApp->state == PLAYER_PLAYING) {
+            PlayCurrentSong(objApp);
+        } else {
+            APP_UpdateCurrentSongDisplay();
+        }
+        return TRUE;
+    }
+
+    /* Reset current subsong and move to next entry */
+    objApp->current_entry->current_subsong = 0;
+
+    /* Move to next entry */
+    if (objApp->shuffle_mode) {
+        /* Random selection */
+        if (objApp->playlist_count > 1) {
+            ULONG random_index;
+            PlaylistEntry *entry;
+
+            do {
+                random_index = rand() % objApp->playlist_count;
+            } while (random_index == objApp->current_index && objApp->playlist_count > 1);
+
+            entry = objApp->playlist_head;
+            for (ULONG i = 0; i < random_index && entry; i++) {
+                entry = entry->next;
+            }
+
+            objApp->current_entry = entry;
+            objApp->current_index = random_index;
+            set(objApp->LSV_PlaylistList, MUIA_List_Active, random_index);
+        }
+    } else {
+        /* Sequential */
+        if (objApp->current_entry->next) {
+            objApp->current_entry = objApp->current_entry->next;
+            objApp->current_index++;
+            set(objApp->LSV_PlaylistList, MUIA_List_Active, objApp->current_index);
+        } else if (objApp->repeat_mode) {
+            objApp->current_entry = objApp->playlist_head;
+            objApp->current_index = 0;
+            set(objApp->LSV_PlaylistList, MUIA_List_Active, 0);
+        } else {
+            /* End of playlist */
+            objApp->state = PLAYER_STOPPED;
+            APP_UpdateStatus("Playlist finished");
+            APP_UpdateCurrentSongDisplay();
+            return TRUE;
+        }
+    }
+
+    /* Update duration for new song */
+    objApp->current_entry->duration = FindSongLength(objApp, objApp->current_entry->md5, 
+                                                     objApp->current_entry->current_subsong);
+    if (objApp->current_entry->duration == 0) {
+        objApp->current_entry->duration = DEFAULT_SONG_LENGTH;
+    }
+
+    APP_UpdateCurrentSongCache();
+    APP_UpdatePlaylistDisplay();
+
+    if (objApp->state == PLAYER_PLAYING) {
+        PlayCurrentSong(objApp);
+    } else {
+        APP_UpdateCurrentSongDisplay();
+    }
+
+    return TRUE;
+}
+
+static BOOL APP_Prev(void)
+{
+    if (!objApp || !objApp->current_entry) {
+        return FALSE;
+    }
+
+    /* If we're more than 3 seconds into the song, restart current song */
+    if (objApp->current_time > 3) {
+        if (objApp->state == PLAYER_PLAYING) {
+            PlayCurrentSong(objApp);
+        }
+        return TRUE;
+    }
+
+    /* Check if we can go to previous subsong */
+    if (objApp->current_entry->current_subsong > 0) {
+        objApp->current_entry->current_subsong--;
+        objApp->current_entry->duration = FindSongLength(objApp, objApp->current_entry->md5, 
+                                                         objApp->current_entry->current_subsong);
+        if (objApp->current_entry->duration == 0) {
+            objApp->current_entry->duration = DEFAULT_SONG_LENGTH;
+        }
+
+        APP_UpdateCurrentSongCache();
+        APP_UpdatePlaylistDisplay();
+
+        if (objApp->state == PLAYER_PLAYING) {
+            PlayCurrentSong(objApp);
+        } else {
+            APP_UpdateCurrentSongDisplay();
+        }
+        return TRUE;
+    }
+
+    /* Move to previous entry */
+    if (objApp->current_index > 0) {
+        PlaylistEntry *entry = objApp->playlist_head;
+
+        for (ULONG i = 0; i < objApp->current_index - 1 && entry; i++) {
+            entry = entry->next;
+        }
+
+        if (entry) {
+            objApp->current_entry = entry;
+            objApp->current_index--;
+
+            /* Set to last subsong */
+            objApp->current_entry->current_subsong = objApp->current_entry->subsongs - 1;
+            objApp->current_entry->duration = FindSongLength(objApp, objApp->current_entry->md5, 
+                                                             objApp->current_entry->current_subsong);
+            if (objApp->current_entry->duration == 0) {
+                objApp->current_entry->duration = DEFAULT_SONG_LENGTH;
+            }
+
+            set(objApp->LSV_PlaylistList, MUIA_List_Active, objApp->current_index);
+            APP_UpdateCurrentSongCache();
+            APP_UpdatePlaylistDisplay();
+
+            if (objApp->state == PLAYER_PLAYING) {
+                PlayCurrentSong(objApp);
+            } else {
+                APP_UpdateCurrentSongDisplay();
+            }
+        }
+    }
+
+    return TRUE;
+}
+
+static BOOL APP_LoadSongLengths(void)
+{
+    struct FileRequester *req;
+
+    if (!AslBase) {
+        APP_UpdateStatus("ASL library not available");
+        return FALSE;
+    }
+
+    req = AllocAslRequestTags(ASL_FileRequest,
+        ASLFR_TitleText, "Select Songlengths.md5 file",
+        ASLFR_DoPatterns, TRUE,
+        ASLFR_InitialPattern, "#?.md5",
+        TAG_DONE);
+
+    if (req && AslRequest(req, NULL)) {
+        char filename[512];
+        strcpy(filename, req->rf_Dir);
+        AddPart(filename, req->rf_File, sizeof(filename));
+
+        U64_DEBUG("=== Manual LoadSongLengths START ===");
+
+        /* Disable button during loading */
+        set(objApp->BTN_LoadSongLengths, MUIA_Disabled, TRUE);
+        set(objApp->BTN_LoadSongLengths, MUIA_Text_Contents, "Loading...");
+
+        if (LoadSongLengthsWithProgress(objApp, filename)) {
+            /* Update existing playlist entries with progress feedback */
+            if (objApp->playlist_count > 0) {
+                PlaylistEntry *entry = objApp->playlist_head;
+                ULONG updated = 0;
+                ULONG entry_num = 0;
+
+                APP_UpdateStatus("Updating playlist entries...");
+
+                while (entry) {
+                    entry_num++;
+
+                    /* Update progress */
+                    if ((entry_num % 5) == 0) {
+                        char progress_msg[256];
+                        sprintf(progress_msg, "Updating playlist... %u/%u",
+                                (unsigned int)entry_num,
+                                (unsigned int)objApp->playlist_count);
+                        APP_UpdateStatus(progress_msg);
+
+                        /* Process MUI events */
+                        ULONG signals;
+                        DoMethod(objApp->App, MUIM_Application_Input, &signals);
                     }
 
-                  /* Play the new subsong */
-                  PlayCurrentSong (data);
-                  UpdatePlaylistDisplay (data);
+                    /* Update subsong count from database */
+                    SongLengthEntry *db_entry = objApp->songlength_db;
+
+                    while (db_entry) {
+                        if (MD5Compare(db_entry->md5, entry->md5)) {
+                            if (db_entry->num_subsongs > entry->subsongs
+                                && db_entry->num_subsongs <= 256) {
+                                entry->subsongs = db_entry->num_subsongs;
+                                updated++;
+                            }
+                            entry->duration = FindSongLength(objApp, entry->md5, entry->current_subsong);
+                            break;
+                        }
+                        db_entry = db_entry->next;
+                    }
+
+                    entry = entry->next;
                 }
-              else
-                {
-                  /* No more subsongs, go to next entry */
-                  NextSong (data);
+
+                /* Update displays */
+                APP_UpdatePlaylistDisplay();
+                if (objApp->current_entry) {
+                    APP_UpdateCurrentSongCache();
+                    APP_UpdateCurrentSongDisplay();
                 }
+
+                char final_msg[256];
+                sprintf(final_msg,
+                        "Database loaded. Updated %u of %u playlist entries",
+                        (unsigned int)updated,
+                        (unsigned int)objApp->playlist_count);
+                APP_UpdateStatus(final_msg);
+            }
+        }
+
+        /* Re-enable button */
+        set(objApp->BTN_LoadSongLengths, MUIA_Disabled, FALSE);
+        set(objApp->BTN_LoadSongLengths, MUIA_Text_Contents, "Load Songlengths");
+    }
+
+    if (req) {
+        FreeAslRequest(req);
+    }
+
+    return TRUE;
+}
+
+static BOOL APP_About(void)
+{
+    if (!objApp) return FALSE;
+
+    MUI_RequestA(objApp->App, 
+                objApp->WIN_Main, 
+                0, 
+                NULL,
+                "Continue",
+                "\33c\0338Ultimate64 SID Player v1.0\n\n"
+                "\0332Playlist SID Player for Ultimate64\n\n"
+                "2025 Marcin Spoczynski",
+                NULL);
+    return TRUE;
+}
+
+static BOOL APP_ConfigOpen(void)
+{
+    if (!objApp || !objApp->WIN_Config) return FALSE;
+
+    /* Update string gadgets with current values */
+    set(objApp->STR_ConfigHost, MUIA_String_Contents, objApp->host);
+    set(objApp->STR_ConfigPassword, MUIA_String_Contents, objApp->password);
+    
+    /* Open the window */
+    set(objApp->WIN_Config, MUIA_Window_Open, TRUE);
+    return TRUE;
+}
+
+static BOOL APP_ConfigOK(void)
+{
+    STRPTR host_str, password_str;
+    
+    if (!objApp || !objApp->WIN_Config) return FALSE;
+    
+    /* Get values from string gadgets */
+    get(objApp->STR_ConfigHost, MUIA_String_Contents, &host_str);
+    get(objApp->STR_ConfigPassword, MUIA_String_Contents, &password_str);
+    
+    /* Copy values */
+    if (host_str) {
+        strncpy(objApp->host, host_str, sizeof(objApp->host) - 1);
+        objApp->host[sizeof(objApp->host) - 1] = '\0';
+    }
+    
+    if (password_str) {
+        strncpy(objApp->password, password_str, sizeof(objApp->password) - 1);
+        objApp->password[sizeof(objApp->password) - 1] = '\0';
+    }
+    
+    /* Save configuration */
+    SaveConfig(objApp);
+    
+    /* Close window */
+    set(objApp->WIN_Config, MUIA_Window_Open, FALSE);
+    APP_UpdateStatus("Configuration saved");
+    
+    return TRUE;
+}
+
+static BOOL APP_ConfigCancel(void)
+{
+    if (!objApp || !objApp->WIN_Config) return FALSE;
+    
+    set(objApp->WIN_Config, MUIA_Window_Open, FALSE);
+    return TRUE;
+}
+
+static BOOL APP_PlaylistActive(void)
+{
+    LONG index;
+    
+    if (!objApp) return FALSE;
+    
+    get(objApp->LSV_PlaylistList, MUIA_List_Active, &index);
+    
+    if (index == MUIV_List_Active_Off || index < 0) {
+        return FALSE;
+    }
+
+    /* Find the selected entry */
+    PlaylistEntry *entry = objApp->playlist_head;
+    for (ULONG i = 0; i < (ULONG)index && entry; i++) {
+        entry = entry->next;
+    }
+
+    if (entry) {
+        objApp->current_entry = entry;
+        objApp->current_index = (ULONG)index;
+        APP_UpdateCurrentSongCache();
+        APP_UpdateCurrentSongDisplay();
+    }
+
+    return TRUE;
+}
+
+static BOOL APP_PlaylistDoubleClick(void)
+{
+    /* Double-click starts playing the selected song */
+    return APP_Play();
+}
+
+static void APP_TimerUpdate(void)
+{
+    if (!objApp) return;
+
+    if (objApp->state == PLAYER_PLAYING) {
+        objApp->timer_counter++;
+
+        /* Update every 10 cycles (approximately 1 second) */
+        if (objApp->timer_counter >= 10) {
+            objApp->timer_counter = 0;
+            objApp->current_time++;
+            APP_UpdateCurrentSongDisplay();
+
+            /* Check if current subsong is finished */
+            if (objApp->current_time >= objApp->total_time) {
+                APP_Next(); /* Auto-advance to next subsong/song */
             }
         }
     }
 }
 
 /* Main function */
-int
-main (int argc, char *argv[])
+int main(void)
 {
-  struct SIDPlayerData data;
-  BOOL running = TRUE;
-  ULONG signals;
-  int retval = 0;
+    int result = RETURN_FAIL;
+    BOOL running = TRUE;
+    ULONG signals;
 
-  /* Suppress unused parameter warnings */
-  (void)argc;
-  (void)argv;
-
-  /* Initialize random seed */
-  srand (time (NULL));
-
-  /* Clear data structure */
-  memset (&data, 0, sizeof (data));
-
-  /* Open MUI master library */
-  MUIMasterBase = OpenLibrary (MUIMASTER_NAME, 0);
-  if (!MUIMasterBase)
-    {
-      DPRINTF ("Failed to open muimaster.library v%d\n", MUIMASTER_VMIN);
-      return 20;
+    if (!InitLibs()) {
+        return 20;
     }
 
-  /* Initialize Ultimate64 library */
-  if (!U64_InitLibrary ())
-    {
-      DPRINTF ("Failed to initialize Ultimate64 library\n");
-      CloseLibrary (MUIMasterBase);
-      return 20;
-    }
-
-  /* Load configuration */
-  LoadConfig (&data);
-
-  BOOL need_config = !IsConfigurationComplete (&data);
-
-  /* Create MUI application */
-  data.app = ApplicationObject, MUIA_Application_Title,
-  "Ultimate64 SID Player", MUIA_Application_Version, version,
-  MUIA_Application_Copyright, "2025", MUIA_Application_Author,
-  "Marcin Spoczynski", MUIA_Application_Description,
-  "SID Player with Playlist for Ultimate64", MUIA_Application_Base,
-  "U64SIDPLAYER", MUIA_Application_Menustrip, CreateMenuBar (&data),
-
-  SubWindow, data.window = WindowObject, MUIA_Window_Title,
-  "Ultimate64 SID Player", MUIA_Window_ID, MAKE_ID ('S', 'I', 'D', 'P'),
-  MUIA_Window_Width, 600, MUIA_Window_Height, 500,
-
-  WindowContents, VGroup,
-
-  /* Connection status */
-      Child, HGroup, MUIA_Frame, MUIV_Frame_Group, MUIA_FrameTitle,
-  "Connection", Child, data.btn_connect = SimpleButton ("Connect"), Child,
-  data.btn_load_songlengths = SimpleButton ("Load Songlengths"), Child,
-  HSpace (0), Child, Label ("Status:"), Child,
-  data.txt_connection_status = TextObject, MUIA_Text_Contents, "Disconnected",
-  MUIA_Frame, MUIV_Frame_Text, End, End,
-
-  /* Current song info */
-      Child, VGroup, MUIA_Frame, MUIV_Frame_Group, MUIA_FrameTitle,
-  "Now Playing", Child, data.txt_current_song = TextObject, MUIA_Text_Contents,
-  "No song loaded", MUIA_Text_PreParse, "\33c\33b", MUIA_Font, MUIV_Font_Big,
-  End, Child, data.txt_subsong_info = TextObject, MUIA_Text_Contents, "",
-  MUIA_Text_PreParse, "\33c", End, Child, HGroup, Child,
-  data.txt_current_time = TextObject, MUIA_Text_Contents, "0:00", End, Child,
-  data.progress_gauge = GaugeObject, MUIA_Gauge_Horiz, TRUE, MUIA_Gauge_Max,
-  100, MUIA_Gauge_Current, 0, End, Child, data.txt_total_time = TextObject,
-  MUIA_Text_Contents, "0:00", End, End, End,
-
-  /* Player controls */
-      Child, HGroup, MUIA_Frame, MUIV_Frame_Group, MUIA_FrameTitle, "Controls",
-  Child, data.btn_prev = SimpleButton ("<<"), Child,
-  data.btn_play = SimpleButton ("Play"), Child,
-  data.btn_stop = SimpleButton ("Stop"), Child,
-  data.btn_next = SimpleButton (">>"), Child, HSpace (10), Child,
-  data.btn_shuffle = MUI_NewObject (MUIC_Image, MUIA_Image_Spec,
-                                    MUII_CheckMark, MUIA_InputMode,
-                                    MUIV_InputMode_Toggle, MUIA_Image_FreeVert,
-                                    TRUE, MUIA_Selected, FALSE, TAG_DONE),
-  Child, Label ("Shuffle"), Child,
-  data.btn_repeat = MUI_NewObject (MUIC_Image, MUIA_Image_Spec, MUII_CheckMark,
-                                   MUIA_InputMode, MUIV_InputMode_Toggle,
-                                   MUIA_Image_FreeVert, TRUE, MUIA_Selected,
-                                   FALSE, TAG_DONE),
-  Child, Label ("Repeat"), Child, HSpace (0), End,
-
-  /* Playlist */
-      Child, VGroup, MUIA_Frame, MUIV_Frame_Group, MUIA_FrameTitle, "Playlist",
-  Child, HGroup, Child, data.btn_add_file = SimpleButton ("Add Files"), Child,
-  data.btn_remove_file = SimpleButton ("Remove"), Child,
-  data.btn_clear_playlist = SimpleButton ("Clear All"), Child, HSpace (0), End,
-  Child, data.playlist_list = ListviewObject, MUIA_Listview_List,
-  MUI_NewObject (MUIC_List, MUIA_List_Format, "", TAG_DONE),
-  MUIA_Listview_MultiSelect, MUIV_Listview_MultiSelect_None, MUIA_Weight, 100,
-  End, End,
-
-  /* Status bar */
-      Child, data.txt_status = TextObject, MUIA_Frame, MUIV_Frame_Text,
-  MUIA_Text_Contents, "Ready", End,
-
-  End, End, End;
-
-  if (!data.app)
-    {
-      DPRINTF ("Failed to create MUI application\n");
-      retval = 20;
-      goto cleanup;
-    }
-
-  /* Initially disable player controls */
-  set (data.btn_play, MUIA_Disabled, TRUE);
-  set (data.btn_stop, MUIA_Disabled, TRUE);
-  set (data.btn_next, MUIA_Disabled, TRUE);
-  set (data.btn_prev, MUIA_Disabled, TRUE);
-
-  /* Setup notifications */
-  DoMethod (data.window, MUIM_Notify, MUIA_Window_CloseRequest, TRUE, data.app,
-            2, MUIM_Application_ReturnID, MUIV_Application_ReturnID_Quit);
-
-  DoMethod (data.btn_connect, MUIM_Notify, MUIA_Pressed, FALSE, data.app, 2,
-            MUIM_Application_ReturnID, ID_CONNECT);
-
-  DoMethod (data.btn_load_songlengths, MUIM_Notify, MUIA_Pressed, FALSE,
-            data.app, 2, MUIM_Application_ReturnID, ID_LOAD_SONGLENGTHS);
-
-  DoMethod (data.btn_add_file, MUIM_Notify, MUIA_Pressed, FALSE, data.app, 2,
-            MUIM_Application_ReturnID, ID_ADD_FILE);
-
-  DoMethod (data.btn_remove_file, MUIM_Notify, MUIA_Pressed, FALSE, data.app,
-            2, MUIM_Application_ReturnID, ID_REMOVE_FILE);
-
-  DoMethod (data.btn_clear_playlist, MUIM_Notify, MUIA_Pressed, FALSE,
-            data.app, 2, MUIM_Application_ReturnID, ID_CLEAR_PLAYLIST);
-
-  DoMethod (data.btn_play, MUIM_Notify, MUIA_Pressed, FALSE, data.app, 2,
-            MUIM_Application_ReturnID, ID_PLAY);
-
-  DoMethod (data.btn_stop, MUIM_Notify, MUIA_Pressed, FALSE, data.app, 2,
-            MUIM_Application_ReturnID, ID_STOP);
-
-  DoMethod (data.btn_next, MUIM_Notify, MUIA_Pressed, FALSE, data.app, 2,
-            MUIM_Application_ReturnID, ID_NEXT);
-
-  DoMethod (data.btn_prev, MUIM_Notify, MUIA_Pressed, FALSE, data.app, 2,
-            MUIM_Application_ReturnID, ID_PREV);
-
-  DoMethod (data.btn_shuffle, MUIM_Notify, MUIA_Selected, MUIV_EveryTime,
-            data.app, 2, MUIM_Application_ReturnID, ID_SHUFFLE);
-
-  DoMethod (data.btn_repeat, MUIM_Notify, MUIA_Selected, MUIV_EveryTime,
-            data.app, 2, MUIM_Application_ReturnID, ID_REPEAT);
-
-  DoMethod (data.playlist_list, MUIM_Notify, MUIA_Listview_DoubleClick, TRUE,
-            data.app, 2, MUIM_Application_ReturnID, ID_PLAYLIST_DCLICK);
-
-  /* Open window */
-  set (data.window, MUIA_Window_Open, TRUE);
-
-  /* Auto-open configuration window if needed */
-  if (need_config)
-    {
-      UpdateStatus (&data,
-                    "Please configure your Ultimate64 connection settings");
-      OpenConfigWindow (&data);
-    }
-  // Auto-load songlengths database if available
-  AutoLoadSongLengths (&data);
-
-  /* Main event loop */
-  while (running)
-    {
-      ULONG id = DoMethod (data.app, MUIM_Application_Input, &signals);
-
-      /* Simple timer update */
-      UpdateTimer (&data);
-
-      switch (id)
-        {
-        case MUIV_Application_ReturnID_Quit:
-        case ID_QUIT:
-          running = FALSE;
-          break;
-
-        case ID_ABOUT:
-          ShowAboutDialog (&data);
-          break;
-
-        case ID_CONFIG_OPEN:
-          OpenConfigWindow (&data);
-          break;
-
-        case ID_CONFIG_OK:
-          ApplyConfigChanges (&data);
-          break;
-
-        case ID_CONFIG_CANCEL:
-          CloseConfigWindow (&data);
-          break;
-
-        case ID_CONFIG_CLEAR:
-          ClearConfig (&data);
-          break;
-
-        case ID_CONNECT:
-          DoConnect (&data);
-          break;
-
-        case ID_LOAD_SONGLENGTHS:
-          DoLoadSongLengths (&data);
-          break;
-
-        case ID_ADD_FILE:
-          DoAddFiles (&data);
-          break;
-
-        case ID_REMOVE_FILE:
-          DoRemoveFile (&data);
-          break;
-
-        case ID_CLEAR_PLAYLIST:
-          DoClearPlaylist (&data);
-          break;
-
-        case ID_PLAY:
-          DoPlay (&data);
-          break;
-
-        case ID_STOP:
-          DoStop (&data);
-          break;
-
-        case ID_NEXT:
-          NextSong (&data);
-          break;
-
-        case ID_PREV:
-          PrevSong (&data);
-          break;
-
-        case ID_SHUFFLE:
-          get (data.btn_shuffle, MUIA_Selected, &data.shuffle_mode);
-          UpdateStatus (&data, data.shuffle_mode ? "Shuffle enabled"
-                                                 : "Shuffle disabled");
-          break;
-
-        case ID_REPEAT:
-          get (data.btn_repeat, MUIA_Selected, &data.repeat_mode);
-          UpdateStatus (&data, data.repeat_mode ? "Repeat enabled"
-                                                : "Repeat disabled");
-          break;
-
-        case ID_PLAYLIST_DCLICK:
-          DoPlaylistDoubleClick (&data);
-          break;
+    if ((objApp = CreateApp())) {
+        if (!APP_Init()) {
+            U64_DEBUG("Failed to initialize application");
+            DisposeApp(objApp);
+            CleanupLibs();
+            return RETURN_FAIL;
         }
 
-      if (running && signals)
-        {
-          /* Add a small delay to prevent busy waiting */
-          signals |= SIGBREAKF_CTRL_C;
-          if (Wait (signals) & SIGBREAKF_CTRL_C)
-            {
-              running = FALSE;
+        U64_DEBUG("Initializing...");
+        
+        /* Load configuration */
+        LoadConfig(objApp);
+        
+        /* Initially disable player controls */
+        set(objApp->BTN_Play, MUIA_Disabled, TRUE);
+        set(objApp->BTN_Stop, MUIA_Disabled, TRUE);
+        set(objApp->BTN_Next, MUIA_Disabled, TRUE);
+        set(objApp->BTN_Prev, MUIA_Disabled, TRUE);
+
+        U64_DEBUG("Opening main window...");
+        DoMethod(objApp->WIN_Main, MUIM_Set, MUIA_Window_Open, TRUE);
+
+        /* Ensure window is actually open */
+        ULONG isOpen = FALSE;
+        get(objApp->WIN_Main, MUIA_Window_Open, &isOpen);
+        if (!isOpen) {
+            U64_DEBUG("Failed to open window!");
+            running = FALSE;
+        } else {
+            U64_DEBUG("Window opened successfully");
+            APP_UpdateStatus("Ready - Configure connection to get started");
+        }
+
+        /* Auto-load songlengths database if available */
+        AutoLoadSongLengths(objApp);
+
+        /* Main event loop */
+        while (running) {
+            ULONG id = DoMethod(objApp->App, MUIM_Application_NewInput, &signals);
+
+            if (id > 0) {
+                switch (id) {
+                    case EVENT_CONNECT:
+                        APP_Connect();
+                        break;
+                    case EVENT_ADD_FILE:
+                        APP_AddFiles();
+                        break;
+                    case EVENT_REMOVE_FILE:
+                        APP_RemoveFile();
+                        break;
+                    case EVENT_CLEAR_PLAYLIST:
+                        APP_ClearPlaylist();
+                        break;
+                    case EVENT_PLAY:
+                        APP_Play();
+                        break;
+                    case EVENT_STOP:
+                        APP_Stop();
+                        break;
+                    case EVENT_NEXT:
+                        APP_Next();
+                        break;
+                    case EVENT_PREV:
+                        APP_Prev();
+                        break;
+                    case EVENT_SHUFFLE:
+                        get(objApp->CHK_Shuffle, MUIA_Selected, &objApp->shuffle_mode);
+                        APP_UpdateStatus(objApp->shuffle_mode ? "Shuffle enabled" : "Shuffle disabled");
+                        break;
+                    case EVENT_REPEAT:
+                        get(objApp->CHK_Repeat, MUIA_Selected, &objApp->repeat_mode);
+                        APP_UpdateStatus(objApp->repeat_mode ? "Repeat enabled" : "Repeat disabled");
+                        break;
+                    case EVENT_LOAD_SONGLENGTHS:
+                        APP_LoadSongLengths();
+                        break;
+                    case EVENT_ABOUT:
+                        APP_About();
+                        break;
+                    case EVENT_CONFIG_OPEN:
+                        APP_ConfigOpen();
+                        break;
+                    case EVENT_CONFIG_OK:
+                        APP_ConfigOK();
+                        break;
+                    case EVENT_CONFIG_CANCEL:
+                        APP_ConfigCancel();
+                        break;
+                    case EVENT_PLAYLIST_ACTIVE:
+                        APP_PlaylistActive();
+                        break;
+                    case EVENT_PLAYLIST_DCLICK:
+                        APP_PlaylistDoubleClick();
+                        break;
+                    case MUIV_Application_ReturnID_Quit:
+                        running = FALSE;
+                        break;
+                }
             }
+
+            /* Timer update */
+            APP_TimerUpdate();
+
+            if (signals) Wait(signals);
         }
+
+        U64_DEBUG("Cleaning up...");
+        set(objApp->WIN_Main, MUIA_Window_Open, FALSE);
+        if (objApp->WIN_Config) {
+            set(objApp->WIN_Config, MUIA_Window_Open, FALSE);
+        }
+        
+        /* Save configuration before exit */
+        SaveConfig(objApp);
+        
+        DisposeApp(objApp);
+        result = RETURN_OK;
+    } else {
+        U64_DEBUG("Failed to create application!");
     }
 
-cleanup:
-  /* Disconnect */
-  if (data.connection)
-    {
-      U64_Disconnect (data.connection);
-    }
-
-  /* Free playlist and database */
-  FreePlaylist (&data);
-  FreeSongLengthDB (&data);
-
-  /* Close configuration window if open */
-  if (data.config_window)
-    {
-      set (data.config_window, MUIA_Window_Open, FALSE);
-    }
-
-  /* Close window and dispose application */
-  if (data.app)
-    {
-      set (data.window, MUIA_Window_Open, FALSE);
-      MUI_DisposeObject (data.app);
-    }
-
-  /* Cleanup library */
-  U64_CleanupLibrary ();
-  CloseLibrary (MUIMasterBase);
-
-  return retval;
+    /* Cleanup */
+    U64_CleanupLibrary();
+    CleanupLibs();
+    
+    return result;
 }
