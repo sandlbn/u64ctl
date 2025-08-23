@@ -966,7 +966,6 @@ static BOOL CheckTimerSignal(ULONG sigs)
 }
 
 
-
 static ULONG ParseTimeString(const char *time_str)
 {
     char *colon_pos;
@@ -2609,7 +2608,6 @@ APP_UpdatePlaylistDisplay(void)
     U64_DEBUG("=== APP_UpdatePlaylistDisplay FIXED END ===");
 }
 
-
 static void
 APP_UpdateCurrentSongDisplay(void)
 {
@@ -3048,7 +3046,7 @@ static BOOL APP_AddFiles(void)
         }
     }
 
-    /* Create ASL requester - NO WINDOW CLOSING! */
+    /* Create ASL requester */
     if (use_remembered_dir) {
         req = AllocAslRequestTags(ASL_FileRequest,
             ASLFR_TitleText, "Select SID files to add",
@@ -3073,7 +3071,7 @@ static BOOL APP_AddFiles(void)
         return FALSE;
     }
 
-    /* Show ASL requester with window open */
+    /* Show ASL requester */
     success = AslRequest(req, NULL);
 
     /* Process results */
@@ -3088,7 +3086,6 @@ static BOOL APP_AddFiles(void)
                 objApp->last_sid_dir[sizeof(objApp->last_sid_dir) - 1] = '\0';
             }
 
-            /* Process files */
             for (LONG i = 0; i < num_args; i++) {
                 char filename[512];
                 
@@ -3103,7 +3100,7 @@ static BOOL APP_AddFiles(void)
                 }
                 
                 if ((i % 10) == 0) {
-                    Delay(2);
+                    Delay(1);
                 }
             }
         }
@@ -3801,7 +3798,7 @@ int main(void)
 {
     int result = RETURN_FAIL;
     BOOL running = TRUE;
-    ULONG signals = 0;  /* Initialize signals */
+    ULONG signals = 0;
 
     if (!InitLibs()) {
         return 20;
@@ -3838,8 +3835,6 @@ int main(void)
         AutoLoadSongLengths(objApp);
 
         while (running) {
-            signals = 0;
-            
             ULONG id = DoMethod(objApp->App, MUIM_Application_NewInput, &signals);
 
             if (id > 0) {
@@ -3867,7 +3862,6 @@ int main(void)
                     case EVENT_CONFIG_CANCEL: APP_ConfigCancel(); break;
                     case EVENT_PLAYLIST_ACTIVE: APP_PlaylistActive(); break;
                     case EVENT_PLAYLIST_DCLICK: APP_PlaylistDoubleClick(); break;
-                    /* NEW: Playlist save/load events */
                     case EVENT_PLAYLIST_LOAD: APP_PlaylistLoad(); break;
                     case EVENT_PLAYLIST_SAVE: APP_PlaylistSave(); break;
                     case EVENT_PLAYLIST_SAVE_AS: APP_PlaylistSaveAs(); break;
@@ -3877,24 +3871,25 @@ int main(void)
             
             if (id == MUIV_Application_ReturnID_Quit) {
                 running = FALSE;
+                break;
             }
 
-            /* Handle timer updates */
+            // Handle timer signals while waiting
             if (TimerRunning && TimerSig) {
-                ULONG current_signals = SetSignal(0, 0);
-                if (current_signals & TimerSig) {
-                    CheckTimerSignal(current_signals);
+                ULONG currentSignals = SetSignal(0, 0);
+                if (currentSignals & TimerSig) {
+                    CheckTimerSignal(currentSignals);
                 }
             }
 
-            /* Build wait signal mask */
+            // Build wait signal mask - include timer if running
             ULONG waitSignals = signals | SIGBREAKF_CTRL_C;
-            
             if (TimerRunning && TimerSig) {
                 waitSignals |= TimerSig;
             }
 
-            if (waitSignals) {
+            // Only wait if we have signals to wait for
+            if (waitSignals & ~SIGBREAKF_CTRL_C) {  // If more than just CTRL_C
                 ULONG receivedSignals = Wait(waitSignals);
                 
                 if (receivedSignals & SIGBREAKF_CTRL_C) {
@@ -3902,6 +3897,7 @@ int main(void)
                     break;
                 }
                 
+                // Handle timer signal
                 if (TimerRunning && TimerSig && (receivedSignals & TimerSig)) {
                     CheckTimerSignal(receivedSignals);
                 }
