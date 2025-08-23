@@ -3835,6 +3835,7 @@ int main(void)
         AutoLoadSongLengths(objApp);
 
         while (running) {
+           signals = 0; 
             ULONG id = DoMethod(objApp->App, MUIM_Application_NewInput, &signals);
 
             if (id > 0) {
