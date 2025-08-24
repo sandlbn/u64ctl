@@ -942,29 +942,23 @@ static BOOL CheckTimerSignal(ULONG sigs)
     
     while ((msg = GetMsg(TimerPort))) {
         timer_fired = TRUE;
+        TimerRunning = FALSE;
         
         if (objApp && objApp->state == PLAYER_PLAYING) {
             objApp->current_time++;
-            
             APP_UpdateCurrentSongDisplay();
-
             if (objApp->current_time >= objApp->total_time) {
                 APP_Next();
             }
             
             if (objApp->state == PLAYER_PLAYING) {
                 StartPeriodicTimer();
-            } else {
-                TimerRunning = FALSE;
             }
-        } else {
-            TimerRunning = FALSE;
         }
     }
     
     return timer_fired;
 }
-
 
 static ULONG ParseTimeString(const char *time_str)
 {
@@ -3875,14 +3869,6 @@ int main(void)
                 break;
             }
 
-            // Handle timer signals while waiting
-            if (TimerRunning && TimerSig) {
-                ULONG currentSignals = SetSignal(0, 0);
-                if (currentSignals & TimerSig) {
-                    CheckTimerSignal(currentSignals);
-                }
-            }
-
             // Build wait signal mask - include timer if running
             ULONG waitSignals = signals | SIGBREAKF_CTRL_C;
             if (TimerRunning && TimerSig) {
@@ -3897,11 +3883,7 @@ int main(void)
                     running = FALSE;
                     break;
                 }
-                
-                // Handle timer signal
-                if (TimerRunning && TimerSig && (receivedSignals & TimerSig)) {
-                    CheckTimerSignal(receivedSignals);
-                }
+                CheckTimerSignal(receivedSignals);
             }
         }
 
