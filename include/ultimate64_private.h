@@ -106,7 +106,9 @@ BOOL U64_JsonGetBool (JsonParser *parser, BOOL *value);
 LONG U64_ParseDeviceInfo (CONST_STRPTR json, U64DeviceInfo *info);
 void U64_FreeDeviceInfo (U64DeviceInfo *info);
 LONG U64_ParseDeviceInfo (CONST_STRPTR json, U64DeviceInfo *info);
-
+LONG U64_DownloadToFile(CONST_STRPTR url, CONST_STRPTR local_filename, 
+                        void (*progress_callback)(ULONG bytes, APTR userdata), 
+                        APTR userdata);
 /* Debug system that respects global verbose flag */
 extern BOOL g_u64_verbose_mode;
 

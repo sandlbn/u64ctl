@@ -16,7 +16,7 @@
 
 #define READ_CHUNK_SIZE 1024
 #define INITIAL_BUFFER_SIZE 4096
-#define MAX_BUFFER_SIZE (128 * 1024) /* 128KB max */
+#define MAX_BUFFER_SIZE (10 * 1024 * 1024) /* 10MB max */
 
 /* HTTP method strings */
 static const char *http_methods[] = { "GET", "POST", "PUT", "DELETE" };
@@ -318,12 +318,12 @@ U64_HttpRequest (U64Connection *conn, HttpRequest *req)
   /* Receive response using PROVEN WORKING METHOD */
   U64_DEBUG ("Receiving response...");
 
-  while (chunk_count < 200) /* Prevent infinite loops */
+  while (chunk_count < 20000) /* Prevent infinite loops */
     {
       struct timeval select_timeout;
       ULONG read_mask;
 
-      select_timeout.tv_sec = 5;
+      select_timeout.tv_sec = 30;
       select_timeout.tv_usec = 0;
       read_mask = 1L << sockfd;
 
@@ -361,8 +361,11 @@ U64_HttpRequest (U64Connection *conn, HttpRequest *req)
             }
 
           chunk_count++;
-          U64_DEBUG ("Received chunk %d: %d bytes", chunk_count,
-                     bytes_received);
+        U64_DEBUG("Chunk %d: received %d bytes, total now %lu, buffer size %lu", 
+                  chunk_count, bytes_received, 
+                  (unsigned long)(total_size + bytes_received), 
+                  (unsigned long)buffer_size);
+
 
           /* Check if buffer needs to grow */
           if (total_size + bytes_received + 1 > buffer_size)
@@ -768,4 +771,273 @@ U64_HttpPostMultipart (U64Connection *conn, CONST_STRPTR path,
     }
 
   return result;
+}
+
+LONG U64_DownloadToFile(CONST_STRPTR url, CONST_STRPTR local_filename, 
+                        void (*progress_callback)(ULONG bytes, APTR userdata), 
+                        APTR userdata)
+{
+    LONG result = U64_ERR_GENERAL;
+    BPTR file = 0;
+    char hostname[256];
+    char path[512];
+    char *host_start, *path_start;
+    int redirect_count = 0;
+    const int MAX_REDIRECTS = 5;
+    char current_url[1024];
+    
+    /* Socket variables for manual streaming */
+    int sockfd = -1;
+    char *chunk_buffer = NULL;
+    char *header_buffer = NULL;
+    BOOL headers_parsed = FALSE;
+    ULONG total_downloaded = 0;
+    int status_code = 0;
+    ULONG header_pos = 0;
+
+    strncpy(current_url, url, sizeof(current_url) - 1);
+    current_url[sizeof(current_url) - 1] = '\0';
+
+    U64_DEBUG("=== STREAMING DOWNLOAD START ===");
+    
+    /* Allocate small buffers only */
+    chunk_buffer = AllocMem(READ_CHUNK_SIZE, MEMF_PUBLIC);
+    header_buffer = AllocMem(4096, MEMF_PUBLIC | MEMF_CLEAR); /* Only 4KB for headers */
+    
+    if (!chunk_buffer || !header_buffer) {
+        U64_DEBUG("Failed to allocate small buffers");
+        result = U64_ERR_MEMORY;
+        goto cleanup;
+    }
+    
+    while (redirect_count < MAX_REDIRECTS) {
+        U64_DEBUG("Download attempt %d, URL: %s", redirect_count + 1, current_url);
+        
+        if (strncmp(current_url, "http://", 7) == 0) {
+            host_start = current_url + 7;
+        } else if (strncmp(current_url, "https://", 8) == 0) {
+            host_start = current_url + 8;
+        } else {
+            result = U64_ERR_INVALID;
+            goto cleanup;
+        }
+
+        path_start = strchr(host_start, '/');
+        if (!path_start) {
+            strcpy(hostname, host_start);
+            strcpy(path, "/");
+        } else {
+            ULONG host_len = path_start - host_start;
+            CopyMem(host_start, hostname, host_len);
+            hostname[host_len] = '\0';
+            strcpy(path, path_start);
+        }
+
+        /* Manual socket connection for streaming */
+        sockfd = socket(AF_INET, SOCK_STREAM, 0);
+        if (sockfd < 0) {
+            result = U64_ERR_NETWORK;
+            goto cleanup;
+        }
+
+        /* Set timeouts */
+        struct timeval timeout;
+        timeout.tv_sec = 30;
+        timeout.tv_usec = 0;
+        setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+        setsockopt(sockfd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+
+        /* DNS and connect - using your proven method */
+        struct sockaddr_in server_addr;
+        struct hostent *server;
+        
+        Forbid();
+        server = gethostbyname(hostname);
+        Permit();
+        
+        if (!server) {
+            result = U64_ERR_NETWORK;
+            goto cleanup;
+        }
+
+        memset(&server_addr, 0, sizeof(server_addr));
+        server_addr.sin_family = AF_INET;
+        CopyMem(server->h_addr, &server_addr.sin_addr.s_addr, server->h_length);
+        server_addr.sin_port = htons(80);
+
+        if (connect(sockfd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
+            result = U64_ERR_NETWORK;
+            goto cleanup;
+        }
+
+        /* Send HTTP request */
+        char request[1024];
+        int len = snprintf(request, sizeof(request),
+                          "GET %s HTTP/1.1\r\n"
+                          "Host: %s\r\n"
+                          "User-Agent: Ultimate64-Amiga/1.0\r\n"
+                          "Accept: */*\r\n"
+                          "Connection: close\r\n"
+                          "\r\n",
+                          path, hostname);
+
+        if (send(sockfd, request, len, 0) < 0) {
+            result = U64_ERR_NETWORK;
+            goto cleanup;
+        }
+
+        /* Stream response directly to file */
+        headers_parsed = FALSE;
+        header_pos = 0;
+        total_downloaded = 0;
+        status_code = 0;
+
+        int chunk_count = 0;
+        while (chunk_count < 10000) { 
+            struct timeval select_timeout;
+            ULONG read_mask;
+
+            select_timeout.tv_sec = 30; /* Longer timeout */
+            select_timeout.tv_usec = 0;
+            read_mask = 1L << sockfd;
+
+            int ready = WaitSelect(sockfd + 1, &read_mask, NULL, NULL, &select_timeout, NULL);
+            if (ready <= 0) {
+                U64_DEBUG("Select timeout or error after %d chunks", chunk_count);
+                break;
+            }
+
+            int bytes_received = recv(sockfd, chunk_buffer, READ_CHUNK_SIZE - 1, 0);
+            if (bytes_received <= 0) {
+                U64_DEBUG("Connection closed after receiving %lu bytes", (unsigned long)total_downloaded);
+                break;
+            }
+
+            chunk_count++;
+            chunk_buffer[bytes_received] = '\0';
+
+            if (!headers_parsed) {
+                /* Still reading headers */
+                if (header_pos + bytes_received < 4095) {
+                    CopyMem(chunk_buffer, header_buffer + header_pos, bytes_received);
+                    header_pos += bytes_received;
+                    header_buffer[header_pos] = '\0';
+
+                    /* Look for end of headers */
+                    char *header_end = strstr(header_buffer, "\r\n\r\n");
+                    if (header_end) {
+                        headers_parsed = TRUE;
+
+                        /* Parse status */
+                        if (strncmp(header_buffer, "HTTP/", 5) == 0) {
+                            char *space = strchr(header_buffer, ' ');
+                            if (space) {
+                                status_code = atoi(space + 1);
+                            }
+                        }
+
+                        U64_DEBUG("Headers parsed, status: %d", status_code);
+
+                        /* Handle redirects */
+                        if (status_code >= 301 && status_code <= 308) {
+                            char *loc = strstr(header_buffer, "Location: ");
+                            if (!loc) loc = strstr(header_buffer, "location: ");
+                            if (loc) {
+                                loc += 10;
+                                char *end = strstr(loc, "\r\n");
+                                if (end && ((size_t)(end - loc)) < sizeof(current_url) - 1) {
+                                    CopyMem(loc, current_url, end - loc);
+                                    current_url[end - loc] = '\0';
+                                    CloseSocket(sockfd);
+                                    sockfd = -1;
+                                    redirect_count++;
+                                    U64_DEBUG("Redirecting to: %s", current_url);
+                                    goto next_redirect;
+                                }
+                            }
+                        }
+
+                        if (status_code != 200) {
+                            U64_DEBUG("HTTP error: %d", status_code);
+                            result = U64_ERR_GENERAL;
+                            goto cleanup;
+                        }
+
+                        /* Open output file */
+                        file = Open(local_filename, MODE_NEWFILE);
+                        if (!file) {
+                            result = U64_ERR_ACCESS;
+                            goto cleanup;
+                        }
+
+                        /* Call progress callback to indicate start */
+                        if (progress_callback) {
+                            progress_callback(0, userdata);
+                        }
+
+                        /* Write any body data that came with headers */
+                        char *body_start = header_end + 4;
+                        LONG body_bytes = (header_buffer + header_pos) - body_start;
+                        if (body_bytes > 0) {
+                            Write(file, body_start, body_bytes);
+                            total_downloaded += body_bytes;
+                            
+                            /* Call progress callback for header body data */
+                            if (progress_callback) {
+                                progress_callback(total_downloaded, userdata);
+                            }
+                        }
+                    }
+                } else {
+                    U64_DEBUG("Headers too large");
+                    result = U64_ERR_GENERAL;
+                    goto cleanup;
+                }
+            } else {
+                /* Headers done, write body directly to file */
+                LONG written = Write(file, chunk_buffer, bytes_received);
+                if (written != bytes_received) {
+                    U64_DEBUG("Write error: %ld of %d bytes", written, bytes_received);
+                    result = U64_ERR_GENERAL;
+                    goto cleanup;
+                }
+
+                total_downloaded += bytes_received;
+                
+                /* Call progress callback more frequently - every 10 chunks (~10KB) */
+                if (progress_callback && (chunk_count % 10 == 0)) {
+                    progress_callback(total_downloaded, userdata);
+                }
+                
+                if (chunk_count % 1000 == 0) {
+                    U64_DEBUG("Downloaded %lu bytes (%d chunks)", 
+                             (unsigned long)total_downloaded, chunk_count);
+                }
+            }
+        }
+
+        if (headers_parsed && status_code == 200 && total_downloaded > 0) {
+            U64_DEBUG("SUCCESS: %lu bytes downloaded", (unsigned long)total_downloaded);
+            
+            /* Final progress callback */
+            if (progress_callback) {
+                progress_callback(total_downloaded, userdata);
+            }
+            
+            result = U64_OK;
+        }
+        break;
+
+next_redirect:
+        continue;
+    }
+
+cleanup:
+    if (file) Close(file);
+    if (sockfd >= 0) CloseSocket(sockfd);
+    if (chunk_buffer) FreeMem(chunk_buffer, READ_CHUNK_SIZE);
+    if (header_buffer) FreeMem(header_buffer, 4096);
+
+    U64_DEBUG("=== STREAMING DOWNLOAD END: %ld ===", result);
+    return result;
 }
