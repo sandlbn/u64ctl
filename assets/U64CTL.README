@@ -86,7 +86,7 @@ Credits:
 
 Source code: https://github.com/sandlbn/u64ctl
 
-Ultimate64 Control Library 0.2.0 (2025)
+Ultimate64 Control Library 0.3.0 (2025)
 - Added advanced SID music player with playlist support
 - Multi-subsong navigation and automatic advancement
 - Song length database integration (Songlengths.md5)

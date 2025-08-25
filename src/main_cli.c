@@ -18,7 +18,7 @@
 #include "ultimate64_amiga.h"
 
 /* Version string */
-static const char version[] = "$VER: u64ctl 0.2.0 (2025)";
+static const char version[] = "$VER: u64ctl 0.3.0 (2025)";
 
 /* Template for ReadArgs */
 #define TEMPLATE                                                              \
