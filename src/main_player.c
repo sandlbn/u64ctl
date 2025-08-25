@@ -3321,7 +3321,7 @@ static BOOL APP_AddFiles(void)
         }
 
         char status_msg[256];
-        sprintf(status_msg, "Added %u files to playlist", (unsigned int)added);
+        sprintf(status_msg, "Added %lu files to playlist", (unsigned int)added);
         APP_UpdateStatus(status_msg);
     } else if (success) {
         APP_UpdateStatus("No valid SID files found");
