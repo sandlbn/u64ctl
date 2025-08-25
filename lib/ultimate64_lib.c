@@ -285,20 +285,25 @@ CONST_STRPTR
 U64_GetErrorString (LONG error)
 {
   LONG index = -error;
-
+  LONG array_size = (LONG)(sizeof(error_strings) / sizeof(error_strings[0]));
+  
 #ifdef DEBUG_BUILD
   printf ("[U64] GetErrorString: error=%ld, index=%ld\n", error, index);
 #endif
 
-  if (index < 0
-      || index >= (LONG)(sizeof (error_strings) / sizeof (error_strings[0])))
-    {
-      return (CONST_STRPTR) "Unknown error";
-    }
+  if (index < 0 || index >= array_size) {
+#ifdef DEBUG_BUILD
+    printf ("[U64] ERROR: Index %ld out of bounds [0, %ld]\n", index, array_size-1);
+#endif
+    return (CONST_STRPTR) "Unknown error";
+  }
+
+#ifdef DEBUG_BUILD
+  printf ("[U64] About to return error_strings[%ld] = '%s'\n", index, error_strings[index]);
+#endif
 
   return (CONST_STRPTR)error_strings[index];
 }
-
 /* Get device information */
 LONG
 U64_GetDeviceInfo (U64Connection *conn, U64DeviceInfo *info)

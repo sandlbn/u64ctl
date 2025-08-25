@@ -57,7 +57,7 @@ enum EVENT_IDS {
   EVENT_PREV,
   EVENT_SHUFFLE,
   EVENT_REPEAT,
-  EVENT_LOAD_SONGLENGTHS,
+  EVENT_DOWNLOAD_SONGLENGTHS,
   EVENT_QUIT,
   EVENT_ABOUT,
   EVENT_PLAYLIST_DCLICK,
@@ -309,6 +309,10 @@ static BOOL HexStringToMD5(const char *hex_string, UBYTE hash[MD5_HASH_SIZE]);
 static void MD5ToHexString(const UBYTE hash[MD5_HASH_SIZE], char hex_string[MD5_STRING_SIZE]);
 static BOOL CheckSongLengthsFile(char *filepath, ULONG filepath_size);
 static void AutoLoadSongLengths(struct ObjApp *obj);
+
+static void DownloadProgressCallback(ULONG bytes_downloaded, APTR userdata);
+static BOOL APP_DownloadSongLengths(void);
+static BOOL MD5Compare(const UBYTE hash1[MD5_HASH_SIZE], const UBYTE hash2[MD5_HASH_SIZE]);
 
 /* MD5 implementation */
 typedef struct {
@@ -1150,6 +1154,199 @@ static BOOL SavePlaylistToFile(struct ObjApp *obj, CONST_STRPTR filename)
     return TRUE;
 }
 
+/* Progress callback for MUI updates */
+static void DownloadProgressCallback(ULONG bytes_downloaded, APTR userdata)
+{
+    (void)userdata;
+    static char progress_msg[256];
+    
+    /* Add debug output */
+    U64_DEBUG("Progress callback: %lu bytes", (unsigned long)bytes_downloaded);
+    
+    /* Convert bytes to KB for display */
+    ULONG kb_downloaded = bytes_downloaded / 1024;
+    
+    sprintf(progress_msg, "Downloaded %lu KB from HVSC server",
+        (unsigned long)kb_downloaded);  /* Use %lu instead of %u */
+
+    APP_UpdateStatus(progress_msg);
+    
+    /* Process MUI events to keep interface responsive */
+    if (objApp && objApp->App) {
+        ULONG signals;
+        DoMethod(objApp->App, MUIM_Application_Input, &signals);
+    }
+}
+
+static BOOL APP_DownloadSongLengths(void)
+{
+    char local_filename[256];
+    char progdir[256];
+    BPTR lock;
+    LONG result;
+    
+    if (!objApp) return FALSE;
+    
+    APP_UpdateStatus("Connecting to HVSC server...");
+    
+    /* Disable button during download */
+    set(objApp->BTN_LoadSongLengths, MUIA_Disabled, TRUE);
+    set(objApp->BTN_LoadSongLengths, MUIA_Text_Contents, "Downloading...");
+    
+    /* Determine save location */
+    lock = GetProgramDir();
+    if (lock && NameFromLock(lock, progdir, sizeof(progdir))) {
+        strcpy(local_filename, progdir);
+        AddPart(local_filename, "Songlengths.md5", sizeof(local_filename));
+    } else {
+        strcpy(local_filename, "Songlengths.md5");
+    }
+    
+    U64_DEBUG("Download target: %s", local_filename);
+    
+    const char *urls[] = {
+        "http://hvsc.brona.dk/HVSC/C64Music/DOCUMENTS/Songlengths.md5",
+        NULL
+    };
+    
+    result = U64_ERR_GENERAL;
+    for (int i = 0; urls[i] && result != U64_OK; i++) {
+        char status_msg[256];
+        sprintf(status_msg, "Trying download from URL %d...", i + 1);
+        APP_UpdateStatus(status_msg);
+        
+        U64_DEBUG("Attempting download from: %s", urls[i]);
+        result = U64_DownloadToFile(urls[i], local_filename, DownloadProgressCallback, NULL);
+        
+        if (result != U64_OK) {
+            U64_DEBUG("Download attempt %d failed: %s", i + 1, U64_GetErrorString(result));
+        }
+    }
+    
+    if (result != U64_OK) {
+        char error_msg[256];
+        
+        /* Provide specific error messages */
+        switch (result) {
+            case U64_ERR_NETWORK:
+                sprintf(error_msg, "Network error - check internet connection");
+                break;
+            case U64_ERR_ACCESS:
+                sprintf(error_msg, "File access error - check disk space and permissions");
+                break;
+            case U64_ERR_NOTFOUND:
+                sprintf(error_msg, "File not found on HVSC server");
+                break;
+            case U64_ERR_TIMEOUT:
+                sprintf(error_msg, "Download timeout - server may be busy");
+                break;
+            default:
+                sprintf(error_msg, "Download failed: %s", U64_GetErrorString(result));
+                break;
+        }
+        
+        APP_UpdateStatus(error_msg);
+        U64_DEBUG("All download attempts failed");
+        
+        set(objApp->BTN_LoadSongLengths, MUIA_Disabled, FALSE);
+        set(objApp->BTN_LoadSongLengths, MUIA_Text_Contents, "Download Songlengths");
+        return FALSE;
+    }
+    
+    APP_UpdateStatus("Download complete, verifying file...");
+    
+    /* Verify downloaded file */
+    BPTR test_file = Open(local_filename, MODE_OLDFILE);
+    if (!test_file) {
+        APP_UpdateStatus("Error: Downloaded file not accessible");
+        set(objApp->BTN_LoadSongLengths, MUIA_Disabled, FALSE);
+        set(objApp->BTN_LoadSongLengths, MUIA_Text_Contents, "Download Songlengths");
+        return FALSE;
+    }
+    
+    /* Check file size */
+    Seek(test_file, 0, OFFSET_END);
+    LONG file_size = Seek(test_file, 0, OFFSET_BEGINNING);
+    Close(test_file);
+    
+    if (file_size < 10000) { /* Expect at least 10KB */
+        char error_msg[256];
+        sprintf(error_msg, "Downloaded file too small (%ld bytes) - may be error page", file_size);
+        APP_UpdateStatus(error_msg);
+        DeleteFile(local_filename);
+        
+        set(objApp->BTN_LoadSongLengths, MUIA_Disabled, FALSE);
+        set(objApp->BTN_LoadSongLengths, MUIA_Text_Contents, "Download Songlengths");
+        return FALSE;
+    }
+    
+    char verify_msg[256];
+    sprintf(verify_msg, "File verified OK (%ld bytes), loading database...", file_size);
+    APP_UpdateStatus(verify_msg);
+    
+    /* Load the downloaded file */
+    if (LoadSongLengthsWithProgress(objApp, local_filename)) {
+        /* Update existing playlist entries */
+        if (objApp->playlist_count > 0) {
+            PlaylistEntry *entry = objApp->playlist_head;
+            ULONG updated = 0;
+            ULONG entry_num = 0;
+
+            APP_UpdateStatus("Updating playlist with HVSC song lengths...");
+
+            while (entry) {
+                entry_num++;
+                if ((entry_num % 10) == 0) {
+                    char progress_msg[256];
+                    sprintf(progress_msg, "Updating playlist... %u/%u",
+                            (unsigned int)entry_num, (unsigned int)objApp->playlist_count);
+                    APP_UpdateStatus(progress_msg);
+                    
+                    ULONG signals;
+                    DoMethod(objApp->App, MUIM_Application_Input, &signals);
+                }
+
+                SongLengthEntry *db_entry = objApp->songlength_db;
+                while (db_entry) {
+                    if (MD5Compare(db_entry->md5, entry->md5)) {
+                        if (db_entry->num_subsongs > entry->subsongs && db_entry->num_subsongs <= 256) {
+                            entry->subsongs = db_entry->num_subsongs;
+                            updated++;
+                        }
+                        entry->duration = FindSongLength(objApp, entry->md5, entry->current_subsong);
+                        break;
+                    }
+                    db_entry = db_entry->next;
+                }
+                entry = entry->next;
+            }
+
+            APP_UpdatePlaylistDisplay();
+            if (objApp->current_entry) {
+                APP_UpdateCurrentSongCache();
+                APP_UpdateCurrentSongDisplay();
+            }
+
+            char final_msg[256];
+            sprintf(final_msg, "HVSC database loaded! Updated %u of %u playlist entries",
+                    (unsigned int)updated, (unsigned int)objApp->playlist_count);
+            APP_UpdateStatus(final_msg);
+        } else {
+            APP_UpdateStatus("HVSC Songlengths database downloaded and loaded successfully!");
+        }
+    } else {
+        APP_UpdateStatus("File downloaded but database loading failed");
+        set(objApp->BTN_LoadSongLengths, MUIA_Disabled, FALSE);
+        set(objApp->BTN_LoadSongLengths, MUIA_Text_Contents, "Download Songlengths");
+        return FALSE;
+    }
+    
+    set(objApp->BTN_LoadSongLengths, MUIA_Disabled, FALSE);
+    set(objApp->BTN_LoadSongLengths, MUIA_Text_Contents, "Download Songlengths");
+    
+    return TRUE;
+}
+
 static BOOL LoadPlaylistFromFile(struct ObjApp *obj, CONST_STRPTR filename)
 {
     BPTR file;
@@ -1864,7 +2061,7 @@ static void AutoLoadSongLengths(struct ObjApp *obj)
 
         /* Re-enable the button */
         set(obj->BTN_LoadSongLengths, MUIA_Disabled, FALSE);
-        set(obj->BTN_LoadSongLengths, MUIA_Text_Contents, "Load Songlengths");
+        set(obj->BTN_LoadSongLengths, MUIA_Text_Contents, "Download Songlengths");
     } else {
         U64_DEBUG("No songlengths file found in program directory");
         APP_UpdateStatus("Ready - No songlengths database found");
@@ -1960,7 +2157,7 @@ static void CreateWindowMain(struct ObjApp *obj)
 
     /* Create controls */
     obj->BTN_Connect = U64SimpleButton("Connect");
-    obj->BTN_LoadSongLengths = U64SimpleButton("Load Songlengths");
+    obj->BTN_LoadSongLengths = U64SimpleButton("Download Songlengths");
     obj->TXT_Status = MUI_NewObject(MUIC_Text,
         MUIA_Frame, MUIV_Frame_Text,
         MUIA_Text_Contents, "Ready",
@@ -2099,9 +2296,10 @@ static void CreateWindowMainEvents(struct ObjApp *obj)
     /* Button events */
     DoMethod(obj->BTN_Connect, MUIM_Notify, MUIA_Pressed, FALSE,
              obj->App, 2, MUIM_Application_ReturnID, EVENT_CONNECT);
-
+             
     DoMethod(obj->BTN_LoadSongLengths, MUIM_Notify, MUIA_Pressed, FALSE,
-             obj->App, 2, MUIM_Application_ReturnID, EVENT_LOAD_SONGLENGTHS);
+             obj->App, 2, MUIM_Application_ReturnID, EVENT_DOWNLOAD_SONGLENGTHS);
+
 
     DoMethod(obj->BTN_AddFile, MUIM_Notify, MUIA_Pressed, FALSE,
              obj->App, 2, MUIM_Application_ReturnID, EVENT_ADD_FILE);
@@ -2391,7 +2589,9 @@ static BOOL APP_Init(void)
     if (!StartTimerDevice()) {
         U64_DEBUG("Failed to initialize timer device - continuing without timer");
     }
-    
+    #ifdef DEBUG_BUILD
+    U64_SetVerboseMode(TRUE);
+    #endif
     LoadConfig(objApp);
     srand(time(NULL));
     
@@ -3832,6 +4032,7 @@ int main(void)
            signals = 0; 
             ULONG id = DoMethod(objApp->App, MUIM_Application_NewInput, &signals);
 
+
             if (id > 0) {
                 switch (id) {
                     case EVENT_CONNECT: APP_Connect(); break;
@@ -3850,7 +4051,7 @@ int main(void)
                         get(objApp->CHK_Repeat, MUIA_Selected, &objApp->repeat_mode);
                         APP_UpdateStatus(objApp->repeat_mode ? "Repeat enabled" : "Repeat disabled");
                         break;
-                    case EVENT_LOAD_SONGLENGTHS: APP_LoadSongLengths(); break;
+                    case EVENT_DOWNLOAD_SONGLENGTHS: APP_DownloadSongLengths(); break;
                     case EVENT_ABOUT: APP_About(); break;
                     case EVENT_CONFIG_OPEN: APP_ConfigOpen(); break;
                     case EVENT_CONFIG_OK: APP_ConfigOK(); break;
