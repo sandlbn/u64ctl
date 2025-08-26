@@ -842,22 +842,78 @@ static STRPTR ExtractSIDTitle(const UBYTE *data, ULONG size)
         return NULL;
     }
 
-    // Title is at offset 0x16, 32 bytes
+    // Extract title (offset 0x16, 32 bytes)
     char title[33];
     CopyMem((APTR)(data + 0x16), title, 32);
     title[32] = '\0';
+    
+    // Extract author (offset 0x36, 32 bytes) 
+    char author[33];
+    CopyMem((APTR)(data + 0x36), author, 32);
+    author[32] = '\0';
 
-    // Remove trailing spaces and nulls
+    // Clean up both strings
     int i;
     for (i = 31; i >= 0 && (title[i] == ' ' || title[i] == '\0'); i--) {
         title[i] = '\0';
     }
-
-    if (strlen(title) == 0) {
-        return NULL;
+    for (i = 31; i >= 0 && (author[i] == ' ' || author[i] == '\0'); i--) {
+        author[i] = '\0';
     }
 
-    return SafeStrDup(title);
+    // Extract SID model information
+    char sid_info[32] = "";
+    if (size >= 0x78) {
+        UBYTE flags = data[0x77];
+        if (flags & 0x10) {  // SID model specified
+            if (flags & 0x40) {  // Dual SID
+                strcpy(sid_info, (flags & 0x20) ? " (8580+)" : " (6581+)");
+            } else {
+                strcpy(sid_info, (flags & 0x20) ? " (8580)" : " (6581)");
+            }
+        }
+    }
+
+    // Check if author is valid (not empty, not placeholder)
+    BOOL valid_author = (strlen(author) > 0 && 
+                        strcmp(author, "<?> ") != 0 && 
+                        strcmp(author, "<?>") != 0 &&
+                        strcmp(author, "Unknown") != 0 &&
+                        strcmp(author, "N/A") != 0);
+
+    // Build result string
+    if (valid_author && strlen(title) > 0) {
+        // "Author - Title (SID Model)" format
+        ULONG combined_len = strlen(author) + strlen(title) + strlen(sid_info) + 4;
+        STRPTR combined = AllocVec(combined_len, MEMF_PUBLIC | MEMF_CLEAR);
+        if (combined) {
+            strcpy(combined, author);
+            strcat(combined, " - ");
+            strcat(combined, title);
+            strcat(combined, sid_info);
+            return combined;
+        }
+    } else if (strlen(title) > 0) {
+        // "Title (SID Model)" format - skip author
+        ULONG combined_len = strlen(title) + strlen(sid_info) + 1;
+        STRPTR combined = AllocVec(combined_len, MEMF_PUBLIC | MEMF_CLEAR);
+        if (combined) {
+            strcpy(combined, title);
+            strcat(combined, sid_info);
+            return combined;
+        }
+    } else if (valid_author) {
+        // Fallback to just author if no title
+        ULONG combined_len = strlen(author) + strlen(sid_info) + 1;
+        STRPTR combined = AllocVec(combined_len, MEMF_PUBLIC | MEMF_CLEAR);
+        if (combined) {
+            strcpy(combined, author);
+            strcat(combined, sid_info);
+            return combined;
+        }
+    }
+
+    return NULL;
 }
 
 static BOOL StartTimerDevice(void)
