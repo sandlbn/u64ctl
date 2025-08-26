@@ -367,12 +367,10 @@ U64_GetConfigCategory(U64Connection *conn, CONST_STRPTR category,
     LONG result;
     char path[512];
     STRPTR encoded_category;
-    JsonParser parser;
     U64ConfigItem *temp_items = NULL;
     ULONG temp_count = 0;
     
-    if (!conn || !category || !items || !item_count)
-    {
+    if (!conn || !category || !items || !item_count) {
         return U64_ERR_INVALID;
     }
     
@@ -383,8 +381,7 @@ U64_GetConfigCategory(U64Connection *conn, CONST_STRPTR category,
     
     /* URL encode category name */
     encoded_category = U64_URLEncode(category);
-    if (!encoded_category)
-    {
+    if (!encoded_category) {
         return U64_ERR_MEMORY;
     }
     
@@ -401,15 +398,13 @@ U64_GetConfigCategory(U64Connection *conn, CONST_STRPTR category,
     
     /* Execute request */
     result = U64_HttpRequest(conn, &req);
-    if (result != U64_OK)
-    {
+    if (result != U64_OK) {
         U64_DEBUG("Failed to get config category: %ld", result);
         conn->last_error = result;
         return result;
     }
     
-    if (!req.response)
-    {
+    if (!req.response) {
         U64_DEBUG("No response received");
         conn->last_error = U64_ERR_GENERAL;
         return U64_ERR_GENERAL;
@@ -417,157 +412,64 @@ U64_GetConfigCategory(U64Connection *conn, CONST_STRPTR category,
     
     U64_DEBUG("Config category response: %.500s", req.response);
     
-    /* Parse JSON response - look for the category object */
-    if (!U64_JsonInit(&parser, req.response))
-    {
-        FreeMem(req.response, req.response_size + 1);
-        conn->last_error = U64_ERR_GENERAL;
-        return U64_ERR_GENERAL;
-    }
-    
-    /* Find the category in the response */
-    if (!U64_JsonFindKey(&parser, category))
-    {
-        U64_DEBUG("Category '%s' not found in response", category);
-        FreeMem(req.response, req.response_size + 1);
-        conn->last_error = U64_ERR_GENERAL;
-        return U64_ERR_GENERAL;
-    }
-    
-    /* Parse the category object manually since it contains key-value pairs */
-    /* This is a simplified parser that extracts string values */
+    /* Allocate items array */
     ULONG max_items = 32;
     temp_items = AllocMem(sizeof(U64ConfigItem) * max_items, MEMF_PUBLIC | MEMF_CLEAR);
-    if (!temp_items)
-    {
+    if (!temp_items) {
         FreeMem(req.response, req.response_size + 1);
         return U64_ERR_MEMORY;
     }
     
-    /* Simple parsing: look for "key": "value" pairs in the category object */
-    char *response_copy = req.response;
-    char *category_start = strstr(response_copy, category);
-    if (category_start)
-    {
-        char *obj_start = strchr(category_start, '{');
-        if (obj_start)
-        {
-            char *current = obj_start + 1;
-            BOOL in_string = FALSE;
-            BOOL escaped = FALSE;
-            BOOL parsing_key = TRUE;
-            char key_buffer[256] = {0};
-            char value_buffer[256] = {0};
-            ULONG key_pos = 0, value_pos = 0;
-            
-            while (*current && *current != '}' && temp_count < max_items)
-            {
-                if (escaped)
-                {
-                    if (parsing_key && key_pos < sizeof(key_buffer) - 1)
-                    {
-                        key_buffer[key_pos++] = *current;
-                    }
-                    else if (!parsing_key && value_pos < sizeof(value_buffer) - 1)
-                    {
-                        value_buffer[value_pos++] = *current;
-                    }
-                    escaped = FALSE;
-                }
-                else if (*current == '\\')
-                {
-                    escaped = TRUE;
-                }
-                else if (*current == '"')
-                {
-                    if (!in_string)
-                    {
-                        /* Start of string */
-                        in_string = TRUE;
-                        if (parsing_key)
-                        {
-                            key_pos = 0;
-                            memset(key_buffer, 0, sizeof(key_buffer));
-                        }
-                        else
-                        {
-                            value_pos = 0;
-                            memset(value_buffer, 0, sizeof(value_buffer));
-                        }
-                    }
-                    else
-                    {
-                        /* End of string */
-                        in_string = FALSE;
-                        if (parsing_key)
-                        {
-                            key_buffer[key_pos] = '\0';
-                        }
-                        else
-                        {
-                            value_buffer[value_pos] = '\0';
+    /* Search for each key-value pair we need in the raw JSON */
+    const char *keys_to_find[] = {
+        "SID Socket 1", "SID Socket 2",
+        "SID Detected Socket 1", "SID Detected Socket 2",
+        "SID Socket 1 1K Ohm Resistor", "SID Socket 2 1K Ohm Resistor",
+        "SID Socket 1 Capacitors", "SID Socket 2 Capacitors",
+        "SID Socket 1 Address", "SID Socket 2 Address",
+        NULL
+    };
+    
+    for (int i = 0; keys_to_find[i] && temp_count < max_items; i++) {
+        char search_pattern[256];
+        snprintf(search_pattern, sizeof(search_pattern), "\"%s\"", keys_to_find[i]);
+        
+        char *key_pos = strstr(req.response, search_pattern);
+        if (key_pos) {
+            /* Found the key, now find the value */
+            char *colon_pos = strchr(key_pos, ':');
+            if (colon_pos) {
+                colon_pos++; /* Skip colon */
+                while (*colon_pos && (*colon_pos == ' ' || *colon_pos == '\t')) colon_pos++; /* Skip whitespace */
+                
+                if (*colon_pos == '"') {
+                    /* String value */
+                    colon_pos++; /* Skip opening quote */
+                    char *end_quote = strchr(colon_pos, '"');
+                    if (end_quote) {
+                        ULONG value_len = end_quote - colon_pos;
+                        if (value_len > 0 && value_len < 256) {
+                            /* Create item */
+                            U64ConfigItem *item = &temp_items[temp_count];
                             
-                            /* Store this key-value pair */
-                            if (strlen(key_buffer) > 0 && temp_count < max_items)
-                            {
-                                U64ConfigItem *item = &temp_items[temp_count];
+                            item->name = AllocMem(strlen(keys_to_find[i]) + 1, MEMF_PUBLIC);
+                            if (item->name) {
+                                strcpy(item->name, keys_to_find[i]);
                                 
-                                item->name = AllocMem(strlen(key_buffer) + 1, MEMF_PUBLIC);
-                                if (item->name)
-                                {
-                                    strcpy(item->name, key_buffer);
-                                }
-                                
-                                /* Try to parse as number first */
-                                char *endptr;
-                                LONG num_value = strtol(value_buffer, &endptr, 10);
-                                if (*endptr == '\0' && endptr != value_buffer)
-                                {
-                                    /* It's a number */
-                                    item->value.is_numeric = TRUE;
-                                    item->value.current_int = num_value;
-                                }
-                                else
-                                {
-                                    /* It's a string */
+                                item->value.current_str = AllocMem(value_len + 1, MEMF_PUBLIC);
+                                if (item->value.current_str) {
+                                    CopyMem(colon_pos, item->value.current_str, value_len);
+                                    item->value.current_str[value_len] = '\0';
                                     item->value.is_numeric = FALSE;
-                                    item->value.current_str = AllocMem(strlen(value_buffer) + 1, MEMF_PUBLIC);
-                                    if (item->value.current_str)
-                                    {
-                                        strcpy(item->value.current_str, value_buffer);
-                                    }
+                                    
+                                    U64_DEBUG("Found key='%s' value='%s'", 
+                                              keys_to_find[i], item->value.current_str);
+                                    temp_count++;
                                 }
-                                
-                                temp_count++;
-                                U64_DEBUG("Parsed config item: '%s' = '%s'", key_buffer, value_buffer);
                             }
                         }
                     }
                 }
-                else if (in_string)
-                {
-                    /* Character inside string */
-                    if (parsing_key && key_pos < sizeof(key_buffer) - 1)
-                    {
-                        key_buffer[key_pos++] = *current;
-                    }
-                    else if (!parsing_key && value_pos < sizeof(value_buffer) - 1)
-                    {
-                        value_buffer[value_pos++] = *current;
-                    }
-                }
-                else if (*current == ':')
-                {
-                    /* Switch from parsing key to parsing value */
-                    parsing_key = FALSE;
-                }
-                else if (*current == ',')
-                {
-                    /* Next key-value pair */
-                    parsing_key = TRUE;
-                }
-                
-                current++;
             }
         }
     }

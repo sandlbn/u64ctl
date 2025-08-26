@@ -202,6 +202,9 @@ struct ObjApp
   BOOL repeat_mode;
   ULONG timer_counter;
 
+  Object *TXT_SID1_Info;
+  Object *TXT_SID2_Info;
+
   /* Configuration */
   char host[256];
   char password[256];
@@ -313,6 +316,9 @@ static void AutoLoadSongLengths(struct ObjApp *obj);
 static void DownloadProgressCallback(ULONG bytes_downloaded, APTR userdata);
 static BOOL APP_DownloadSongLengths(void);
 static BOOL MD5Compare(const UBYTE hash1[MD5_HASH_SIZE], const UBYTE hash2[MD5_HASH_SIZE]);
+
+static BOOL APP_GetSIDConfig(char *sid1_info, char *sid2_info, size_t buffer_size);
+static void APP_UpdateSIDConfigDisplay(void);
 
 /* MD5 implementation */
 typedef struct {
@@ -1152,6 +1158,163 @@ static BOOL SavePlaylistToFile(struct ObjApp *obj, CONST_STRPTR filename)
     APP_UpdateStatus(status_msg);
 
     return TRUE;
+}
+static BOOL APP_GetSIDConfig(char *sid1_info, char *sid2_info, size_t buffer_size)
+{
+    // Clear output buffers
+    sid1_info[0] = '\0';
+    sid2_info[0] = '\0';
+    
+    // Local variables to avoid corruption
+    char sid1_type[128] = "";
+    char sid2_type[128] = "";
+    char sid1_addr[128] = "";
+    char sid2_addr[128] = "";
+    
+    if (!objApp || !objApp->connection) {
+        U64_DEBUG("APP_GetSIDConfig: No connection");
+        snprintf(sid1_info, buffer_size, "SID #1: Not connected");
+        snprintf(sid2_info, buffer_size, "SID #2: Not connected");
+        return FALSE;
+    }
+    
+    U64_DEBUG("=== Getting SID Configuration ===");
+    
+    // STEP 1: Get SID chip types from "SID Sockets Configuration"
+    {
+        U64ConfigItem *items = NULL;
+        ULONG item_count = 0;
+        LONG result;
+        
+        U64_DEBUG("STEP 1: Requesting SID Sockets Configuration...");
+        result = U64_GetConfigCategory(objApp->connection, "SID Sockets Configuration", &items, &item_count);
+        U64_DEBUG("SID Sockets Configuration result: %ld, items: %p, count: %lu", 
+                  result, items, (unsigned long)item_count);
+        
+        if (result == U64_OK && items && item_count > 0) {
+            for (ULONG i = 0; i < item_count; i++) {
+                if (items[i].name && items[i].value.current_str) {
+                    U64_DEBUG("SID Sockets item %lu: name='%s' value='%s'", 
+                              (unsigned long)i, items[i].name, items[i].value.current_str);
+                    
+                    // Use exact string comparison for the detected socket keys
+                    if (strcmp(items[i].name, "SID Detected Socket 1") == 0) {
+                        strncpy(sid1_type, items[i].value.current_str, sizeof(sid1_type) - 1);
+                        sid1_type[sizeof(sid1_type) - 1] = '\0';
+                        U64_DEBUG("*** FOUND SID1 TYPE: '%s' ***", sid1_type);
+                    }
+                    else if (strcmp(items[i].name, "SID Detected Socket 2") == 0) {
+                        strncpy(sid2_type, items[i].value.current_str, sizeof(sid2_type) - 1);
+                        sid2_type[sizeof(sid2_type) - 1] = '\0';
+                        U64_DEBUG("*** FOUND SID2 TYPE: '%s' ***", sid2_type);
+                    }
+                    // Ignore the "SID Socket X" keys (without "Detected") as they just show "Enabled"
+                }
+            }
+            U64_FreeConfigItems(items, item_count);
+        } else {
+            U64_DEBUG("STEP 1 FAILED: result=%ld", result);
+        }
+        
+        U64_DEBUG("After STEP 1: sid1_type='%s', sid2_type='%s'", sid1_type, sid2_type);
+    }
+    
+    // STEP 2: Get SID addresses from "SID Addressing"
+    {
+        U64ConfigItem *items = NULL;
+        ULONG item_count = 0;
+        LONG result;
+        
+        U64_DEBUG("STEP 2: Requesting SID Addressing configuration...");
+        result = U64_GetConfigCategory(objApp->connection, "SID Addressing", &items, &item_count);
+        U64_DEBUG("SID Addressing result: %ld, items: %p, count: %lu", 
+                  result, items, (unsigned long)item_count);
+        
+        if (result == U64_OK && items && item_count > 0) {
+            for (ULONG i = 0; i < item_count; i++) {
+                if (items[i].name && items[i].value.current_str) {
+                    U64_DEBUG("SID Addressing item %lu: name='%s' value='%s'", 
+                              (unsigned long)i, items[i].name, items[i].value.current_str);
+                    
+                    // Use exact string matching for address keys
+                    if (strcmp(items[i].name, "SID Socket 1 Address") == 0) {
+                        strncpy(sid1_addr, items[i].value.current_str, sizeof(sid1_addr) - 1);
+                        sid1_addr[sizeof(sid1_addr) - 1] = '\0';
+                        U64_DEBUG("*** FOUND SID1 ADDR: '%s' ***", sid1_addr);
+                    }
+                    else if (strcmp(items[i].name, "SID Socket 2 Address") == 0) {
+                        strncpy(sid2_addr, items[i].value.current_str, sizeof(sid2_addr) - 1);
+                        sid2_addr[sizeof(sid2_addr) - 1] = '\0';
+                        U64_DEBUG("*** FOUND SID2 ADDR: '%s' ***", sid2_addr);
+                    }
+                }
+            }
+            U64_FreeConfigItems(items, item_count);
+        } else {
+            U64_DEBUG("STEP 2 FAILED: result=%ld, using defaults", result);
+            strcpy(sid1_addr, "$D400");
+            strcpy(sid2_addr, "$D420");
+        }
+        
+        U64_DEBUG("After STEP 2: sid1_addr='%s', sid2_addr='%s'", sid1_addr, sid2_addr);
+    }
+    
+    U64_DEBUG("=== FINAL RESULTS ===");
+    U64_DEBUG("SID1: type='%s', addr='%s'", sid1_type, sid1_addr);
+    U64_DEBUG("SID2: type='%s', addr='%s'", sid2_type, sid2_addr);
+    
+    // Build display strings
+    if (strlen(sid1_type) > 0 && strcmp(sid1_type, "None") != 0 && strcmp(sid1_type, "none") != 0) {
+        if (strlen(sid1_addr) > 0) {
+            snprintf(sid1_info, buffer_size, "SID #1: %s @ %s", sid1_type, sid1_addr);
+        } else {
+            snprintf(sid1_info, buffer_size, "SID #1: %s @ $D400", sid1_type); // default address
+        }
+    } else {
+        if (strlen(sid1_addr) > 0) {
+            snprintf(sid1_info, buffer_size, "SID #1: No chip detected @ %s", sid1_addr);
+        } else {
+            snprintf(sid1_info, buffer_size, "SID #1: No chip detected");
+        }
+    }
+    
+    if (strlen(sid2_type) > 0 && strcmp(sid2_type, "None") != 0 && strcmp(sid2_type, "none") != 0) {
+        if (strlen(sid2_addr) > 0) {
+            snprintf(sid2_info, buffer_size, "SID #2: %s @ %s", sid2_type, sid2_addr);
+        } else {
+            snprintf(sid2_info, buffer_size, "SID #2: %s @ $D420", sid2_type); // default address
+        }
+    } else {
+        if (strlen(sid2_addr) > 0) {
+            snprintf(sid2_info, buffer_size, "SID #2: No chip detected @ %s", sid2_addr);
+        } else {
+            snprintf(sid2_info, buffer_size, "SID #2: No chip detected");
+        }
+    }
+    
+    U64_DEBUG("=== DISPLAY STRINGS ===");
+    U64_DEBUG("sid1_info: '%s'", sid1_info);
+    U64_DEBUG("sid2_info: '%s'", sid2_info);
+    
+    return TRUE;
+}
+/* Function to update SID configuration display */
+static void APP_UpdateSIDConfigDisplay(void)
+{
+    char sid1_info[64];
+    char sid2_info[64];
+    
+    if (!objApp || !objApp->TXT_SID1_Info || !objApp->TXT_SID2_Info) {
+        return;
+    }
+    
+    if (objApp->connection && APP_GetSIDConfig(sid1_info, sid2_info, sizeof(sid1_info))) {
+        set(objApp->TXT_SID1_Info, MUIA_Text_Contents, sid1_info);
+        set(objApp->TXT_SID2_Info, MUIA_Text_Contents, sid2_info);
+    } else {
+        set(objApp->TXT_SID1_Info, MUIA_Text_Contents, "SID #1: Not connected");
+        set(objApp->TXT_SID2_Info, MUIA_Text_Contents, "SID #2: Not connected");
+    }
 }
 
 /* Progress callback for MUI updates */
@@ -2167,6 +2330,16 @@ static void CreateWindowMain(struct ObjApp *obj)
         MUIA_Text_Contents, "Disconnected",
         TAG_DONE);
 
+    obj->TXT_SID1_Info = MUI_NewObject(MUIC_Text,
+        MUIA_Text_Contents, "SID #1: Not connected",
+        MUIA_Text_PreParse, "\33c",
+        TAG_DONE);
+        
+    obj->TXT_SID2_Info = MUI_NewObject(MUIC_Text,
+        MUIA_Text_Contents, "SID #2: Not connected", 
+        MUIA_Text_PreParse, "\33c",
+        TAG_DONE);
+
     obj->LSV_PlaylistList = MUI_NewObject(MUIC_Listview,
         MUIA_Listview_List, MUI_NewObject(MUIC_List,
             MUIA_Frame, MUIV_Frame_InputList,
@@ -2219,14 +2392,24 @@ static void CreateWindowMain(struct ObjApp *obj)
     /* Create groups */
     group1 = MUI_NewObject(MUIC_Group,
         MUIA_Frame, MUIV_Frame_Group,
-        MUIA_FrameTitle, "Connection",
-        MUIA_Group_Horiz, TRUE,
-        Child, obj->BTN_Connect,
-        Child, obj->BTN_LoadSongLengths,
-        Child, MUI_NewObject(MUIC_Rectangle, TAG_DONE), /* spacer */
-        Child, U64Label("Status:"),
-        Child, obj->TXT_ConnectionStatus,
+        MUIA_FrameTitle, "Connection & SID Status",
+        Child, MUI_NewObject(MUIC_Group,
+            MUIA_Group_Horiz, TRUE,
+            Child, obj->BTN_Connect,
+            Child, obj->BTN_LoadSongLengths,
+            Child, MUI_NewObject(MUIC_Rectangle, TAG_DONE), /* spacer */
+            Child, U64Label("Status:"),
+            Child, obj->TXT_ConnectionStatus,
+            TAG_DONE),
+        /* SID Configuration display */
+        Child, MUI_NewObject(MUIC_Group,
+            MUIA_Group_Horiz, TRUE,
+            MUIA_Group_Columns, 2,
+            Child, obj->TXT_SID1_Info,
+            Child, obj->TXT_SID2_Info,
+            TAG_DONE),
         TAG_DONE);
+
 
     group2 = MUI_NewObject(MUIC_Group,
         MUIA_Frame, MUIV_Frame_Group,
@@ -3179,6 +3362,8 @@ static BOOL APP_Connect(void)
         set(objApp->BTN_Connect, MUIA_Text_Contents, "Connect");
         APP_UpdateStatus("Disconnected");
 
+        APP_UpdateSIDConfigDisplay();
+
         /* Disable controls */
         set(objApp->BTN_Play, MUIA_Disabled, TRUE);
         set(objApp->BTN_Stop, MUIA_Disabled, TRUE);
@@ -3203,6 +3388,8 @@ static BOOL APP_Connect(void)
             set(objApp->BTN_Connect, MUIA_Text_Contents, "Disconnect");
             APP_UpdateStatus(status);
 
+            APP_UpdateSIDConfigDisplay();
+
             /* Enable controls */
             set(objApp->BTN_Play, MUIA_Disabled, FALSE);
             set(objApp->BTN_Stop, MUIA_Disabled, FALSE);
@@ -3211,6 +3398,8 @@ static BOOL APP_Connect(void)
         } else {
             set(objApp->TXT_ConnectionStatus, MUIA_Text_Contents, "Disconnected");
             APP_UpdateStatus("Connection failed");
+
+            APP_UpdateSIDConfigDisplay();
         }
     }
 
