@@ -42,6 +42,7 @@ LIB_SOURCES = \
 	$(LIBSRCDIR)/ultimate64_network.c \
 	$(LIBSRCDIR)/ultimate64_json.c \
 	$(LIBSRCDIR)/ultimate64_http.c \
+	$(LIBSRCDIR)/ultimate64_config.c \
 	$(LIBSRCDIR)/ultimate64_drives.c \
 	$(LIBSRCDIR)/ultimate64_utils.c
 

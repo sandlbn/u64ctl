@@ -223,6 +223,96 @@ UBYTE *U64_StringToPETSCII (CONST_STRPTR str, ULONG *out_len);
 STRPTR U64_PETSCIIToString (CONST UBYTE *petscii, ULONG len);
 void U64_FreePETSCII (UBYTE *petscii);
 
+/* Configuration value structure (forward declarations) */
+struct U64ConfigValue;
+struct U64ConfigItem;
+
+/* Configuration value structure */
+typedef struct U64ConfigValue
+{
+    STRPTR current_str;     /* String value (for string/enum types) */
+    LONG current_int;       /* Integer value (for numeric types) */
+    BOOL is_numeric;        /* TRUE if value is numeric, FALSE if string */
+    
+    /* Metadata (only filled when getting item details) */
+    LONG min_value;         /* Minimum value for numeric types */
+    LONG max_value;         /* Maximum value for numeric types */
+    STRPTR format;          /* Format string (e.g., "%d") */
+    STRPTR default_str;     /* Default string value */
+    LONG default_int;       /* Default numeric value */
+} U64ConfigValue;
+
+/* Configuration item structure */
+typedef struct U64ConfigItem
+{
+    STRPTR name;            /* Item name */
+    U64ConfigValue value;   /* Current value and metadata */
+} U64ConfigItem;
+
+/* Configuration management functions */
+
+/* Get list of all configuration categories */
+LONG U64_GetConfigCategories(U64Connection *conn, STRPTR **categories, ULONG *count);
+
+/* Free categories array returned by U64_GetConfigCategories */
+void U64_FreeConfigCategories(STRPTR *categories, ULONG count);
+
+/* Get configuration items in a category */
+LONG U64_GetConfigCategory(U64Connection *conn, CONST_STRPTR category,
+                           U64ConfigItem **items, ULONG *item_count);
+
+/* Free configuration items returned by U64_GetConfigCategory */
+void U64_FreeConfigItems(U64ConfigItem *items, ULONG count);
+
+/* Get detailed information about a configuration item */
+LONG U64_GetConfigItem(U64Connection *conn, CONST_STRPTR category, 
+                       CONST_STRPTR item, U64ConfigItem *config_item);
+
+/* Free a single configuration item */
+void U64_FreeConfigItem(U64ConfigItem *item);
+
+/* Set a configuration item value */
+LONG U64_SetConfigItem(U64Connection *conn, CONST_STRPTR category, 
+                       CONST_STRPTR item, CONST_STRPTR value);
+
+/* Set multiple configuration items at once using JSON */
+LONG U64_SetConfigItems(U64Connection *conn, CONST_STRPTR json_config);
+
+/* Load configuration from flash memory */
+LONG U64_LoadConfigFromFlash(U64Connection *conn);
+
+/* Save configuration to flash memory */
+LONG U64_SaveConfigToFlash(U64Connection *conn);
+
+/* Reset configuration to factory defaults */
+LONG U64_ResetConfigToDefault(U64Connection *conn);
+
+/* Utility functions for configuration management */
+
+/* Build JSON string for setting multiple config items */
+STRPTR U64_BuildConfigJSON(CONST_STRPTR *categories, CONST_STRPTR *items,
+                          CONST_STRPTR *values, ULONG count);
+
+/* Free JSON string created by U64_BuildConfigJSON */
+void U64_FreeConfigJSON(STRPTR json);
+
+/* Helper macros for common configuration operations */
+#define U64_SetDriveEnabled(conn, drive, enabled) \
+    U64_SetConfigItem(conn, "Drive " #drive " Settings", "Drive", \
+                      (enabled) ? "Enabled" : "Disabled")
+
+#define U64_SetDriveType(conn, drive, type) \
+    U64_SetConfigItem(conn, "Drive " #drive " Settings", "Drive Type", type)
+
+#define U64_SetDriveBusID(conn, drive, bus_id) \
+    do { \
+        char bus_str[8]; \
+        sprintf(bus_str, "%d", bus_id); \
+        U64_SetConfigItem(conn, "Drive " #drive " Settings", "Drive Bus ID", bus_str); \
+    } while(0)
+
+
+
 /* VIC Stream functions (if supported) */
 #ifdef U64_VICSTREAM_SUPPORT
 typedef struct

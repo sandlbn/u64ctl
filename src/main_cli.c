@@ -75,7 +75,14 @@ typedef enum
   U64CMD_SETHOST,
   U64CMD_SETPASSWORD,
   U64CMD_SETPORT,
-  U64CMD_CLEARCONFIG
+  U64CMD_CLEARCONFIG,
+  U64CMD_LISTCONFIG,     /* List all configuration categories */
+  U64CMD_SHOWCONFIG,     /* Show items in a specific category */
+  U64CMD_GETCONFIG,      /* Get value of specific configuration item */
+  U64CMD_SETCONFIG,      /* Set value of specific configuration item */
+  U64CMD_SAVECONFIG,     /* Save current config to flash */
+  U64CMD_LOADCONFIG,     /* Load config from flash */
+  U64CMD_RESETCONFIG,    /* Reset config to defaults */
 } U64CommandType;
 
 /* Command table */
@@ -106,6 +113,13 @@ static const Command commands[] = {
   { "playsid", U64CMD_PLAYSID, "Play SID file (FILE required)", TRUE },
   { "playmod", U64CMD_PLAYMOD, "Play MOD file (FILE required)", TRUE },
   { "config", U64CMD_CONFIG, "Show current configuration", TRUE },
+  { "listconfig", U64CMD_LISTCONFIG, "List all configuration categories", TRUE },
+  { "showconfig", U64CMD_SHOWCONFIG, "Show configuration category (TEXT=category)", TRUE },
+  { "getconfig", U64CMD_GETCONFIG, "Get config item (TEXT=category/item)", TRUE },
+  { "setconfig", U64CMD_SETCONFIG, "Set config item (TEXT=category/item, ADDRESS=value)", TRUE },
+  { "saveconfig", U64CMD_SAVECONFIG, "Save current configuration to flash", TRUE },
+  { "loadconfig", U64CMD_LOADCONFIG, "Load configuration from flash", TRUE },
+  { "resetconfig", U64CMD_RESETCONFIG, "Reset configuration to defaults", TRUE },
   { "sethost", U64CMD_SETHOST, "Set default host (HOST required)", TRUE },
   { "setpassword", U64CMD_SETPASSWORD,
     "Set default password (PASSWORD required)", TRUE },
@@ -1668,6 +1682,370 @@ ExecuteCommand (U64Connection *conn, U64CommandType cmd, LONG *args,
           }
       }
       break;
+    case U64CMD_LISTCONFIG:
+      PrintVerbose("Executing LISTCONFIG command");
+      {
+        STRPTR *categories;
+        ULONG cat_count;
+        ULONG i;
+        
+        PrintInfo("Getting configuration categories...");
+        result = U64_GetConfigCategories(conn, &categories, &cat_count);
+        
+        if (result != U64_OK)
+        {
+          PrintError("Failed to get configuration categories: %s", 
+                     U64_GetErrorString(result));
+          return 10;
+        }
+        
+        PrintInfo("Ultimate64 Configuration Categories (%lu found):", 
+                  (unsigned long)cat_count);
+        PrintInfo("====================================================");
+        
+        for (i = 0; i < cat_count; i++)
+        {
+          PrintInfo("  %2lu. %s", (unsigned long)(i + 1), categories[i]);
+        }
+        
+        PrintInfo("");
+        PrintInfo("Use 'showconfig' with category name to see items:");
+        PrintInfo("  u64ctl showconfig TEXT \"Drive A Settings\"");
+        
+        U64_FreeConfigCategories(categories, cat_count);
+      }
+      break;
+
+    case U64CMD_SHOWCONFIG:
+      PrintVerbose("Executing SHOWCONFIG command");
+      if (!text)
+      {
+        PrintError("Category name required (use TEXT argument)");
+        PrintInfo("Example: u64ctl showconfig TEXT \"Drive A Settings\"");
+        return 5;
+      }
+      {
+        U64ConfigItem *items;
+        ULONG item_count;
+        ULONG i;
+        
+        PrintInfo("Getting configuration items for category: %s", text);
+        result = U64_GetConfigCategory(conn, text, &items, &item_count);
+        
+        if (result != U64_OK)
+        {
+          PrintError("Failed to get configuration category '%s': %s", 
+                     text, U64_GetErrorString(result));
+          PrintInfo("Use 'listconfig' to see available categories");
+          return 10;
+        }
+        
+        PrintInfo("Configuration Category: %s", text);
+        PrintInfo("=========================================");
+        PrintInfo("Items (%lu found):", (unsigned long)item_count);
+        PrintInfo("");
+        
+        for (i = 0; i < item_count; i++)
+        {
+          const U64ConfigItem *item = &items[i];
+          
+          printf("  %-30s = ", item->name);
+          
+          if (item->value.is_numeric)
+          {
+            printf("%ld", item->value.current_int);
+          }
+          else
+          {
+            printf("\"%s\"", item->value.current_str ? item->value.current_str : "NULL");
+          }
+          
+          printf("\n");
+        }
+        
+        PrintInfo("");
+        PrintInfo("Use 'getconfig' for detailed item information:");
+        PrintInfo("  u64ctl getconfig TEXT \"%s/item_name\"", text);
+        
+        U64_FreeConfigItems(items, item_count);
+      }
+      break;
+
+    case U64CMD_GETCONFIG:
+      PrintVerbose("Executing GETCONFIG command");
+      if (!text)
+      {
+        PrintError("Configuration path required (use TEXT argument)");
+        PrintInfo("Format: \"Category Name/Item Name\"");
+        PrintInfo("Example: u64ctl getconfig TEXT \"Drive A Settings/Drive Type\"");
+        return 5;
+      }
+      {
+        char *category_copy, *category, *item;
+        U64ConfigItem config_item;
+        
+        /* Parse category/item path */
+        category_copy = AllocMem(strlen(text) + 1, MEMF_PUBLIC);
+        if (!category_copy)
+        {
+          PrintError("Out of memory");
+          return 10;
+        }
+        strcpy(category_copy, text);
+        
+        /* Find the separator */
+        item = strrchr(category_copy, '/');
+        if (!item)
+        {
+          PrintError("Invalid format. Use: \"Category Name/Item Name\"");
+          PrintInfo("Example: \"Drive A Settings/Drive Type\"");
+          FreeMem(category_copy, strlen(text) + 1);
+          return 5;
+        }
+        
+        *item = '\0';  /* Terminate category string */
+        item++;        /* Point to item name */
+        category = category_copy;
+        
+        PrintVerbose("Category: '%s', Item: '%s'", category, item);
+        
+        result = U64_GetConfigItem(conn, category, item, &config_item);
+        
+        if (result != U64_OK)
+        {
+          PrintError("Failed to get configuration item '%s/%s': %s", 
+                     category, item, U64_GetErrorString(result));
+          FreeMem(category_copy, strlen(text) + 1);
+          return 10;
+        }
+        
+        PrintInfo("Configuration Item Details:");
+        PrintInfo("===========================");
+        PrintInfo("Category: %s", category);
+        PrintInfo("Item:     %s", item);
+        PrintInfo("");
+        
+        if (config_item.value.is_numeric)
+        {
+          PrintInfo("Current Value: %ld", config_item.value.current_int);
+          
+          if (config_item.value.min_value != 0 || config_item.value.max_value != 0)
+          {
+            PrintInfo("Valid Range:   %ld - %ld", 
+                      config_item.value.min_value, config_item.value.max_value);
+          }
+          
+          if (config_item.value.format)
+          {
+            PrintInfo("Format:        %s", config_item.value.format);
+          }
+          
+          if (config_item.value.default_int != config_item.value.current_int)
+          {
+            PrintInfo("Default Value: %ld", config_item.value.default_int);
+          }
+        }
+        else
+        {
+          PrintInfo("Current Value: \"%s\"", 
+                    config_item.value.current_str ? config_item.value.current_str : "NULL");
+          
+          if (config_item.value.default_str)
+          {
+            if (!config_item.value.current_str || 
+                strcmp(config_item.value.default_str, config_item.value.current_str) != 0)
+            {
+              PrintInfo("Default Value: \"%s\"", config_item.value.default_str);
+            }
+          }
+        }
+        
+        PrintInfo("");
+        PrintInfo("To change this value, use:");
+        PrintInfo("  u64ctl setconfig TEXT \"%s/%s\" ADDRESS \"new_value\"", 
+                  category, item);
+        
+        U64_FreeConfigItem(&config_item);
+        FreeMem(category_copy, strlen(text) + 1);
+      }
+      break;
+
+    case U64CMD_SETCONFIG:
+      PrintVerbose("Executing SETCONFIG command");
+      if (!text || !address_str)
+      {
+        PrintError("Configuration path and value required");
+        PrintInfo("Format: TEXT=\"Category/Item\" ADDRESS=\"value\"");
+        PrintInfo("Example: u64ctl setconfig TEXT \"Drive A Settings/Drive Type\" ADDRESS \"1571\"");
+        return 5;
+      }
+      {
+        char *category_copy, *category, *item;
+        
+        /* Parse category/item path */
+        category_copy = AllocMem(strlen(text) + 1, MEMF_PUBLIC);
+        if (!category_copy)
+        {
+          PrintError("Out of memory");
+          return 10;
+        }
+        strcpy(category_copy, text);
+        
+        /* Find the separator */
+        item = strrchr(category_copy, '/');
+        if (!item)
+        {
+          PrintError("Invalid format. Use: \"Category Name/Item Name\"");
+          PrintInfo("Example: \"Drive A Settings/Drive Type\"");
+          FreeMem(category_copy, strlen(text) + 1);
+          return 5;
+        }
+        
+        *item = '\0';  /* Terminate category string */
+        item++;        /* Point to item name */
+        category = category_copy;
+        
+        PrintVerbose("Setting %s/%s = %s", category, item, address_str);
+        PrintInfo("Setting configuration: %s/%s = \"%s\"", category, item, address_str);
+        
+        result = U64_SetConfigItem(conn, category, item, address_str);
+        
+        if (result != U64_OK)
+        {
+          PrintError("Failed to set configuration item: %s", 
+                     U64_GetErrorString(result));
+          
+          switch (result)
+          {
+            case U64_ERR_NOTFOUND:
+              PrintError("Configuration item not found. Check category/item name.");
+              break;
+            case U64_ERR_INVALID:
+              PrintError("Invalid value. Check valid range or format.");
+              break;
+            case U64_ERR_ACCESS:
+              PrintError("Access denied. Check password.");
+              break;
+            case U64_ERR_NETWORK:
+              PrintError("Network error. Check connection.");
+              break;
+            default:
+              PrintError("Unexpected error occurred.");
+              break;
+          }
+          
+          FreeMem(category_copy, strlen(text) + 1);
+          return 10;
+        }
+        
+        PrintInfo("Configuration updated successfully");
+        PrintInfo("");
+        PrintInfo("Note: Changes are temporary until saved to flash.");
+        PrintInfo("Use 'saveconfig' to make changes permanent:");
+        PrintInfo("  u64ctl saveconfig");
+        
+        FreeMem(category_copy, strlen(text) + 1);
+      }
+      break;
+
+    case U64CMD_SAVECONFIG:
+      PrintVerbose("Executing SAVECONFIG command");
+      PrintInfo("Saving current configuration to flash memory...");
+      
+      result = U64_SaveConfigToFlash(conn);
+      
+      if (result != U64_OK)
+      {
+        PrintError("Failed to save configuration: %s", U64_GetErrorString(result));
+        
+        switch (result)
+        {
+          case U64_ERR_ACCESS:
+            PrintError("Access denied. Check password or permissions.");
+            break;
+          case U64_ERR_NETWORK:
+            PrintError("Network error. Check connection.");
+            break;
+          case U64_ERR_TIMEOUT:
+            PrintError("Operation timed out. Ultimate64 may be busy.");
+            break;
+          default:
+            PrintError("Unexpected error occurred.");
+            break;
+        }
+        return 10;
+      }
+      
+      PrintInfo("Configuration saved to flash memory successfully");
+      PrintInfo("Settings will persist after reboot");
+      break;
+
+    case U64CMD_LOADCONFIG:
+      PrintVerbose("Executing LOADCONFIG command");
+      PrintInfo("Loading configuration from flash memory...");
+      
+      result = U64_LoadConfigFromFlash(conn);
+      
+      if (result != U64_OK)
+      {
+        PrintError("Failed to load configuration: %s", U64_GetErrorString(result));
+        
+        switch (result)
+        {
+          case U64_ERR_ACCESS:
+            PrintError("Access denied. Check password or permissions.");
+            break;
+          case U64_ERR_NETWORK:
+            PrintError("Network error. Check connection.");
+            break;
+          case U64_ERR_TIMEOUT:
+            PrintError("Operation timed out. Ultimate64 may be busy.");
+            break;
+          default:
+            PrintError("Unexpected error occurred.");
+            break;
+        }
+        return 10;
+      }
+      
+      PrintInfo("Configuration loaded from flash memory successfully");
+      PrintInfo("All settings restored to saved values");
+      break;
+
+    case U64CMD_RESETCONFIG:
+      PrintVerbose("Executing RESETCONFIG command");
+      PrintInfo("Resetting configuration to factory defaults...");
+      PrintInfo("WARNING: This will reset ALL settings to default values!");
+      
+      result = U64_ResetConfigToDefault(conn);
+      
+      if (result != U64_OK)
+      {
+        PrintError("Failed to reset configuration: %s", U64_GetErrorString(result));
+        
+        switch (result)
+        {
+          case U64_ERR_ACCESS:
+            PrintError("Access denied. Check password or permissions.");
+            break;
+          case U64_ERR_NETWORK:
+            PrintError("Network error. Check connection.");
+            break;
+          case U64_ERR_TIMEOUT:
+            PrintError("Operation timed out. Ultimate64 may be busy.");
+            break;
+          default:
+            PrintError("Unexpected error occurred.");
+            break;
+        }
+        return 10;
+      }
+      
+      PrintInfo("Configuration reset to factory defaults successfully");
+      PrintInfo("Note: Changes are temporary until saved to flash.");
+      PrintInfo("Use 'saveconfig' to make the reset permanent:");
+      PrintInfo("  u64ctl saveconfig");
+      break;
     case U64CMD_PLAYMOD:
       PrintVerbose ("Executing PLAYMOD command");
       if (!file)
@@ -1872,6 +2250,23 @@ PrintUsage (void)
   printf ("  u64ctl playsid FILE hvsc/rob_hubbard.sid SONG 1 VERBOSE\n");
   printf ("  u64ctl playmod FILE music.mod         - Play MOD file\n");
   printf ("  u64ctl playmod FILE \"ambient/track1.mod\" VERBOSE\n");
+  printf("\nConfiguration Management Examples:\n");
+  printf("  u64ctl listconfig                      - List all configuration categories\n");
+  printf("  u64ctl showconfig TEXT \"Drive A Settings\" - Show items in category\n");
+  printf("  u64ctl getconfig TEXT \"Drive A Settings/Drive Type\" - Get specific item\n");
+  printf("  u64ctl setconfig TEXT \"Drive A Settings/Drive Type\" ADDRESS \"1571\"\n");
+  printf("  u64ctl setconfig TEXT \"Drive A Settings/Drive Bus ID\" ADDRESS \"9\"\n");
+  printf("  u64ctl saveconfig                      - Save changes to flash\n");
+  printf("  u64ctl loadconfig                      - Load saved config\n");
+  printf("  u64ctl resetconfig                     - Reset to factory defaults\n");
+
+  printf("\nConfiguration Workflow:\n");
+  printf("  1. u64ctl listconfig                   - See available categories\n");
+  printf("  2. u64ctl showconfig TEXT \"category\"   - See items in category\n");
+  printf("  3. u64ctl getconfig TEXT \"cat/item\"    - Get current value\n");
+  printf("  4. u64ctl setconfig TEXT \"cat/item\" ADDRESS \"value\" - Change value\n");
+  printf("  5. u64ctl saveconfig                   - Make changes permanent\n");
+
 }
 
 /* Main entry point */
@@ -1912,7 +2307,7 @@ main (int argc, char **argv)
   rdargs = ReadArgs ((CONST_STRPTR)TEMPLATE, args, NULL);
   if (!rdargs)
     {
-      PrintError ("Invalid arguments. Use 'ultimate64 ?' for help");
+      PrintError ("Invalid arguments. Use 'u64ctl ?' for help");
       return 5;
     }
 
