@@ -173,7 +173,7 @@ struct AppData
 };
 
 /* Version string */
-static const char version[] = "$VER: Ultimate64_MUI 1.0 (2025)";
+static const char version[] = "$VER: Ultimate64_MUI 0.3.1 (2025)";
 
 /* Library bases */
 struct Library *MUIMasterBase = NULL;

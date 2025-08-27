@@ -33,7 +33,7 @@ CLI_PROGRAM = u64ctl
 MUI_PROGRAM = u64ctlMUI  
 SIDPLAYER_PROGRAM = u64sidplayer
 LIBRARY_NAME = libultimate64.a
-VERSION = 0.3.0
+VERSION = 0.3.1
 
 # Library source files
 LIB_SOURCES = \

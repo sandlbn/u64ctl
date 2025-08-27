@@ -30,7 +30,7 @@
 // Application defines
 #define APP_NAME "Ultimate64 Control"
 #define APP_DATE "20.08.2025"
-#define APP_VERSION "1.0"
+#define APP_VERSION "0.3.1"
 #define APP_VERSTRING "$VER: " APP_NAME " " APP_VERSION " (" APP_DATE ")"
 #define APP_AUTHORS "Coding: Marcin Spoczynski"
 #define APP_COPYRIGHT "Free to use and distribute"

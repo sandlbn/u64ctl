@@ -32,7 +32,7 @@
 #include "ultimate64_private.h"
 
 /* Version string */
-static const char version[] = "$VER: u64sidplayer 0.3.0 (2025)";
+static const char version[] = "$VER: u64sidplayer 0.3.1 (2025)";
 
 /* Constants */
 #define DEFAULT_SONG_LENGTH 300 /* 5 minutes in seconds */
