@@ -1328,9 +1328,9 @@ static BOOL APP_GetSIDConfig(char *sid1_info, char *sid2_info, size_t buffer_siz
         }
     } else {
         if (strlen(sid1_addr) > 0) {
-            snprintf(sid1_info, buffer_size, "SID #1: No chip detected @ %s", sid1_addr);
+            snprintf(sid1_info, buffer_size, "SID #1: Unknown @ %s", sid1_addr);
         } else {
-            snprintf(sid1_info, buffer_size, "SID #1: No chip detected");
+            snprintf(sid1_info, buffer_size, "SID #1: Ultimate II");
         }
     }
     
@@ -1342,9 +1342,9 @@ static BOOL APP_GetSIDConfig(char *sid1_info, char *sid2_info, size_t buffer_siz
         }
     } else {
         if (strlen(sid2_addr) > 0) {
-            snprintf(sid2_info, buffer_size, "SID #2: No chip detected @ %s", sid2_addr);
+            snprintf(sid2_info, buffer_size, "SID #2: Unknown @ %s", sid2_addr);
         } else {
-            snprintf(sid2_info, buffer_size, "SID #2: No chip detected");
+            snprintf(sid2_info, buffer_size, "SID #2: Ultimate II");
         }
     }
     
