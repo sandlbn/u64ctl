@@ -198,6 +198,8 @@ struct ObjApp
   Object *MN_Playlist_Load;
   Object *MN_Playlist_Save;
   Object *MN_Playlist_SaveAs;
+  Object *BTN_LoadPlaylist;
+  Object *BTN_SavePlaylist;
 
   /* Player state */
   PlayerState state;
@@ -2384,6 +2386,7 @@ static void CreateMenu(struct ObjApp *obj)
     End;
 }
 
+/* Window creation */
 static void CreateMenuEvents(struct ObjApp *obj)
 {
     DoMethod(obj->MN_Project_About, MUIM_Notify, MUIA_Menuitem_Trigger,
@@ -2395,7 +2398,7 @@ static void CreateMenuEvents(struct ObjApp *obj)
     DoMethod(obj->MN_Project_Quit, MUIM_Notify, MUIA_Menuitem_Trigger,
              MUIV_EveryTime, obj->App, 2, MUIM_Application_ReturnID, MUIV_Application_ReturnID_Quit);
 
-    /* NEW: Playlist menu events */
+    /* Playlist menu events */
     DoMethod(obj->MN_Playlist_Load, MUIM_Notify, MUIA_Menuitem_Trigger,
              MUIV_EveryTime, obj->App, 2, MUIM_Application_ReturnID, EVENT_PLAYLIST_LOAD);
 
@@ -2406,7 +2409,6 @@ static void CreateMenuEvents(struct ObjApp *obj)
              MUIV_EveryTime, obj->App, 2, MUIM_Application_ReturnID, EVENT_PLAYLIST_SAVE_AS);
 }
 
-/* Window creation */
 static void CreateWindowMain(struct ObjApp *obj)
 {
     Object *group1, *group2, *group3, *group4, *group0;
@@ -2448,10 +2450,56 @@ static void CreateWindowMain(struct ObjApp *obj)
         MUIA_Listview_MultiSelect, MUIV_Listview_MultiSelect_None,
         TAG_DONE);
 
-    /* Create playlist management buttons */
-    obj->BTN_AddFile = U64SimpleButton("Add Files");
-    obj->BTN_RemoveFile = U64SimpleButton("Remove");
-    obj->BTN_ClearPlaylist = U64SimpleButton("Clear All");
+    /* Create playlist management buttons with equal widths */
+    obj->BTN_AddFile = MUI_NewObject(MUIC_Text,
+        MUIA_Frame, MUIV_Frame_Button,
+        MUIA_Font, MUIV_Font_Button,
+        MUIA_Text_Contents, "Add Files",
+        MUIA_Text_PreParse, "\33c",
+        MUIA_Background, MUII_ButtonBack,
+        MUIA_InputMode, MUIV_InputMode_RelVerify,
+        MUIA_Weight, 100,  /* Equal weight */
+        TAG_DONE);
+    
+    obj->BTN_RemoveFile = MUI_NewObject(MUIC_Text,
+        MUIA_Frame, MUIV_Frame_Button,
+        MUIA_Font, MUIV_Font_Button,
+        MUIA_Text_Contents, "Remove",
+        MUIA_Text_PreParse, "\33c",
+        MUIA_Background, MUII_ButtonBack,
+        MUIA_InputMode, MUIV_InputMode_RelVerify,
+        MUIA_Weight, 100,  /* Equal weight */
+        TAG_DONE);
+    
+    obj->BTN_ClearPlaylist = MUI_NewObject(MUIC_Text,
+        MUIA_Frame, MUIV_Frame_Button,
+        MUIA_Font, MUIV_Font_Button,
+        MUIA_Text_Contents, "Clear All",
+        MUIA_Text_PreParse, "\33c",
+        MUIA_Background, MUII_ButtonBack,
+        MUIA_InputMode, MUIV_InputMode_RelVerify,
+        MUIA_Weight, 100,  /* Equal weight */
+        TAG_DONE);
+    
+    obj->BTN_LoadPlaylist = MUI_NewObject(MUIC_Text,
+        MUIA_Frame, MUIV_Frame_Button,
+        MUIA_Font, MUIV_Font_Button,
+        MUIA_Text_Contents, "Load",
+        MUIA_Text_PreParse, "\33c",
+        MUIA_Background, MUII_ButtonBack,
+        MUIA_InputMode, MUIV_InputMode_RelVerify,
+        MUIA_Weight, 100,  /* Equal weight */
+        TAG_DONE);
+    
+    obj->BTN_SavePlaylist = MUI_NewObject(MUIC_Text,
+        MUIA_Frame, MUIV_Frame_Button,
+        MUIA_Font, MUIV_Font_Button,
+        MUIA_Text_Contents, "Save",
+        MUIA_Text_PreParse, "\33c",
+        MUIA_Background, MUII_ButtonBack,
+        MUIA_InputMode, MUIV_InputMode_RelVerify,
+        MUIA_Weight, 100,  /* Equal weight */
+        TAG_DONE);
 
     /* Create search controls */
     obj->STR_SearchText = MUI_NewObject(MUIC_String,
@@ -2459,6 +2507,7 @@ static void CreateWindowMain(struct ObjApp *obj)
         MUIA_String_MaxLen, 255,
         MUIA_CycleChain, TRUE,
         MUIA_String_Contents, "",
+        MUIA_Weight, 50,  /* Limit search field width */
         TAG_DONE);
 
     obj->CYC_SearchMode = MUI_NewObject(MUIC_Cycle,
@@ -2467,6 +2516,8 @@ static void CreateWindowMain(struct ObjApp *obj)
         MUIA_CycleChain, TRUE,
         MUIA_Weight, 0,
         TAG_DONE);
+
+
 
     obj->BTN_SearchPrev = MUI_NewObject(MUIC_Text,
         MUIA_Frame, MUIV_Frame_Button,
@@ -2589,21 +2640,32 @@ static void CreateWindowMain(struct ObjApp *obj)
         Child, U64Label("Repeat"),
         TAG_DONE);
 
-    /* Playlist management buttons row */
+    /* Playlist management buttons row with logical grouping */
     playlist_buttons = MUI_NewObject(MUIC_Group,
         MUIA_Group_Horiz, TRUE,
+        /* File operations group */
         Child, obj->BTN_AddFile,
         Child, obj->BTN_RemoveFile,
         Child, obj->BTN_ClearPlaylist,
-        Child, MUI_NewObject(MUIC_Rectangle, TAG_DONE), /* spacer */
+        Child, MUI_NewObject(MUIC_Rectangle, MUIA_Weight, 20, TAG_DONE), /* separator */
+        /* Playlist save/load group */
+        Child, obj->BTN_LoadPlaylist,
+        Child, obj->BTN_SavePlaylist,
         TAG_DONE);
 
-    /* Search controls row */
+    /* Better balanced search row with proper spacing */
     search_row = MUI_NewObject(MUIC_Group,
         MUIA_Group_Horiz, TRUE,
         MUIA_Group_Spacing, 4,
+        Child, MUI_NewObject(MUIC_Text,
+            MUIA_Text_Contents, "Search:",
+            MUIA_Text_PreParse, "\33r",
+            MUIA_Weight, 0,
+            MUIA_FixWidth, 45,
+            TAG_DONE),
         Child, obj->STR_SearchText,
         Child, obj->CYC_SearchMode,
+        Child, MUI_NewObject(MUIC_Rectangle, MUIA_Weight, 10, TAG_DONE), /* spacer */
         Child, obj->BTN_SearchPrev,
         Child, obj->BTN_SearchNext,
         Child, obj->BTN_SearchClear,
@@ -2699,6 +2761,13 @@ static void CreateWindowMainEvents(struct ObjApp *obj)
 
     DoMethod(obj->BTN_SearchPrev, MUIM_Notify, MUIA_Pressed, FALSE,
              obj->App, 2, MUIM_Application_ReturnID, EVENT_SEARCH_PREV);
+
+    DoMethod(obj->BTN_LoadPlaylist, MUIM_Notify, MUIA_Pressed, FALSE,
+            obj->App, 2, MUIM_Application_ReturnID, EVENT_PLAYLIST_LOAD);
+
+    DoMethod(obj->BTN_SavePlaylist, MUIM_Notify, MUIA_Pressed, FALSE,
+            obj->App, 2, MUIM_Application_ReturnID, EVENT_PLAYLIST_SAVE);
+
 
 }
 
