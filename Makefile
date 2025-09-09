@@ -6,7 +6,21 @@ OS := $(shell uname)
 
 # CPU configuration (can be overridden)
 CPU ?= 68000
-CPU_FLAGS =
+ifeq ($(CPU),68000)
+    CPU_FLAGS = -m68000 -msoft-float
+else ifeq ($(CPU),68010)
+    CPU_FLAGS = -m68010 -msoft-float
+else ifeq ($(CPU),68020)
+    CPU_FLAGS = -m68020
+else ifeq ($(CPU),68030)
+    CPU_FLAGS = -m68030
+else ifeq ($(CPU),68040)
+    CPU_FLAGS = -m68040
+else ifeq ($(CPU),68060)
+    CPU_FLAGS = -m68060
+else
+    $(error Unsupported CPU: $(CPU). Supported: 68000, 68010, 68020, 68030, 68040, 68060)
+endif
 
 # Directories
 LIBDIR = /opt/amiga/m68k-amigaos/lib
