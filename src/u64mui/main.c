@@ -51,11 +51,11 @@ static const char *tab_titles[]
     = { (CONST_STRPTR) "Disks & Carts", (CONST_STRPTR) "Memory",
         (CONST_STRPTR) "Machine", (CONST_STRPTR) "Music", NULL };
 
-/* Drive options */
+/* Drive options — the Ultimate64 only exposes two physical internal drives
+ * (A at bus 8, B at bus 9). C/D were never real units on the hardware. */
 static const char *drive_options[]
-    = { (CONST_STRPTR) "Drive A", (CONST_STRPTR) "Drive B",
-        (CONST_STRPTR) "Drive C", (CONST_STRPTR) "Drive D", NULL };
-const char *drive_ids[] = { "a", "b", "c", "d" };
+    = { (CONST_STRPTR) "Drive A", (CONST_STRPTR) "Drive B", NULL };
+const char *drive_ids[] = { "a", "b" };
 
 /* Mount mode options */
 static const char *mode_options[]
@@ -171,7 +171,10 @@ AppMain (int argc, char *argv[])
   data.chk_verbose = MUI_NewObject (MUIC_Image, MUIA_Image_Spec,
                                     MUII_CheckMark, MUIA_InputMode,
                                     MUIV_InputMode_Toggle, MUIA_Image_FreeVert,
-                                    TRUE, MUIA_Selected, FALSE, TAG_DONE),
+                                    TRUE, MUIA_Frame, MUIV_Frame_ImageButton,
+                                    MUIA_Background, MUII_ButtonBack,
+                                    MUIA_ShowSelState, TRUE,
+                                    MUIA_Selected, FALSE, TAG_DONE),
   End, Child, HGroup, Child, Label ("Host:"), Child, TextObject,
   MUIA_Text_Contents, (CONST_STRPTR)data.host, MUIA_Frame, MUIV_Frame_Text,
   MUIA_UserData, MAKE_ID ('H', 'O', 'S', 'T'), End, End, End,

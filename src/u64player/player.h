@@ -53,13 +53,28 @@
     MUIA_Text_PreParse, "\33r", \
     TAG_DONE)
 
+/* Checkmark rendered inside a proper image-button frame with a button-back
+ * fill, so it visibly reads as a togglable gadget (the default MUII_CheckMark
+ * alone is easy to miss on lighter palettes, especially inside list rows). */
 #define U64CheckMark(selected) \
   MUI_NewObject(MUIC_Image, \
     MUIA_Image_Spec, MUII_CheckMark, \
     MUIA_InputMode, MUIV_InputMode_Toggle, \
     MUIA_Image_FreeVert, TRUE, \
+    MUIA_Frame, MUIV_Frame_ImageButton, \
+    MUIA_Background, MUII_ButtonBack, \
+    MUIA_ShowSelState, TRUE, \
     MUIA_Selected, selected, \
     TAG_DONE)
+
+/* String input with a recessed input frame + dedicated StringBack fill so it
+ * stands out from surrounding text/label widgets. Caller adds MUIA_String_*
+ * attributes. */
+#define U64StringInput() \
+  MUI_NewObject(MUIC_String, \
+    MUIA_Frame, MUIV_Frame_String, \
+    MUIA_Background, MUII_StringBack, \
+    MUIA_CycleChain, TRUE
 
 /* Event IDs */
 enum EVENT_IDS {

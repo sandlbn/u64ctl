@@ -43,18 +43,28 @@ CreateConfigWindow (struct AppData *data)
   WindowContents, VGroup, Child, VGroup, MUIA_Frame, MUIV_Frame_Group,
   MUIA_FrameTitle, (CONST_STRPTR) "Connection Settings",
 
-  Child, HGroup, Child, Label ("Host:"), Child, host_string = StringObject,
-  MUIA_String_Contents, (CONST_STRPTR)data->host, MUIA_String_MaxLen, 255, End,
+  /* Two-column form: labels share a column, inputs share a column, so
+   * everything is vertically aligned regardless of label width. */
+  Child, GroupObject, MUIA_Group_Columns, 2,
+
+  Child, Label ("Host:"),
+  Child, host_string = StringObject,
+      MUIA_String_Contents, (CONST_STRPTR)data->host,
+      MUIA_String_MaxLen, 255, End,
+
+  Child, Label ("Port:"),
+  Child, port_string = StringObject,
+      MUIA_String_Contents, (CONST_STRPTR)data->port,
+      MUIA_String_MaxLen, 7,
+      MUIA_String_Accept, (CONST_STRPTR) "0123456789", End,
+
+  Child, Label ("Password:"),
+  Child, password_string = StringObject,
+      MUIA_String_Contents, (CONST_STRPTR)data->password,
+      MUIA_String_MaxLen, 255,
+      MUIA_String_Secret, TRUE, End,
+
   End,
-
-  Child, HGroup, Child, Label ("Port:"), Child, port_string = StringObject,
-  MUIA_String_Contents, (CONST_STRPTR)data->port, MUIA_String_MaxLen, 7,
-  MUIA_String_Accept, (CONST_STRPTR) "0123456789", End, Child, HSpace (0), End,
-
-  Child, HGroup, Child, Label ("Password:"), Child,
-  password_string = StringObject, MUIA_String_Contents,
-  (CONST_STRPTR)data->password, MUIA_String_MaxLen, 255, MUIA_String_Secret,
-  TRUE, End, End,
 
   Child, VSpace (10),
 
@@ -174,7 +184,8 @@ ShowAboutDialog (struct AppData *data)
 void
 UpdateDiskDisplay (struct AppData *data)
 {
-  const char *drive_letters[] = { "a", "b", "c", "d" };
+  /* Ultimate64 has only two real internal drives (A=bus 8, B=bus 9). */
+  const char *drive_letters[] = { "a", "b" };
   int i;
   char status_text[1024];
 
@@ -187,7 +198,7 @@ UpdateDiskDisplay (struct AppData *data)
 
   strcpy (status_text, "");
 
-  for (i = 0; i < 4; i++)
+  for (i = 0; i < 2; i++)
     {
       BOOL is_mounted;
       STRPTR image_name = NULL;

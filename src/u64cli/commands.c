@@ -1082,13 +1082,14 @@ ExecuteCommand (U64Connection *conn, U64CommandType cmd, LONG *args,
     case U64CMD_DRIVES:
       PrintVerbose ("Executing DRIVES status command");
       {
-        const char *drive_letters[] = { "a", "b", "c", "d" };
+        /* Ultimate64 exposes two real internal drives: A (bus 8), B (bus 9). */
+        const char *drive_letters[] = { "a", "b" };
         int i;
 
         PrintInfo ("Drive Status:");
         PrintInfo ("=============");
 
-        for (i = 0; i < 4; i++)
+        for (i = 0; i < 2; i++)
           {
             BOOL is_mounted;
             STRPTR image_name = NULL;

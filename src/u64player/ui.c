@@ -193,6 +193,7 @@ void CreateWindowMain(struct ObjApp *obj)
     /* Create search controls */
     obj->STR_SearchText = MUI_NewObject(MUIC_String,
         MUIA_Frame, MUIV_Frame_String,
+        MUIA_Background, MUII_StringBack,
         MUIA_String_MaxLen, 255,
         MUIA_CycleChain, TRUE,
         MUIA_String_Contents, "",
@@ -479,11 +480,15 @@ void CreateWindowConfig(struct ObjApp *obj)
 
     obj->STR_ConfigHost = MUI_NewObject(MUIC_String,
         MUIA_Frame, MUIV_Frame_String,
+        MUIA_Background, MUII_StringBack,
+        MUIA_CycleChain, TRUE,
         MUIA_String_MaxLen, 255,
         TAG_DONE);
 
     obj->STR_ConfigPassword = MUI_NewObject(MUIC_String,
         MUIA_Frame, MUIV_Frame_String,
+        MUIA_Background, MUII_StringBack,
+        MUIA_CycleChain, TRUE,
         MUIA_String_MaxLen, 255,
         MUIA_String_Secret, TRUE,
         TAG_DONE);

@@ -26,7 +26,13 @@
 #define VGroup              MUI_NewObject(MUIC_Group
 #define HGroup              MUI_NewObject(MUIC_Group, MUIA_Group_Horiz, TRUE
 #define GroupObject         MUI_NewObject(MUIC_Group
-#define StringObject        MUI_NewObject(MUIC_String
+/* String gadgets default to a visible recessed frame + StringBack fill so
+ * they stand out from surrounding text widgets. Callers append their own
+ * MUIA_String_* tags and close with End. */
+#define StringObject        MUI_NewObject(MUIC_String, \
+                                MUIA_Frame, MUIV_Frame_String, \
+                                MUIA_Background, MUII_StringBack, \
+                                MUIA_CycleChain, TRUE
 #define TextObject          MUI_NewObject(MUIC_Text
 #define CycleObject         MUI_NewObject(MUIC_Cycle
 #define RegisterObject      MUI_NewObject(MUIC_Register
