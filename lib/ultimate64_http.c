@@ -669,19 +669,19 @@ U64_BuildMultipartForm (CONST_STRPTR boundary, CONST_STRPTR field_name,
 
   ptr = (char *)form_data;
 
-  /* Add extra fields */
-  for (i = 0; i < num_extras; i++)
-    {
-      sprintf (ptr, "--%s\r\n", (char *)boundary);
-      ptr += strlen (ptr);
-      sprintf (ptr, "Content-Disposition: form-data; name=\"%s\"\r\n\r\n",
-               (char *)extra_fields[i]);
-      ptr += strlen (ptr);
-      sprintf (ptr, "%s\r\n", (char *)extra_values[i]);
-      ptr += strlen (ptr);
-    }
+  /* Emit the file field FIRST, then the extra text fields.
+   *
+   * The Ultimate64 HTTP firmware's multipart parser only registers fields
+   * that appear AFTER the file part; any fields emitted before it are
+   * silently dropped. Verified empirically against firmware at 10.0.0.139:
+   *   extras-first  ->  {"errors":["Invalid Type ''"]}  (type lost)
+   *   file-first    ->  {"errors":[]}                  (mount succeeds)
+   * This also matches what reqwest produces for the canonical Rust crate's
+   *   curl -F file=@... -F mode=... -F type=...
+   * example.
+   */
 
-  /* Add file field */
+  /* File field */
   sprintf (ptr, "--%s\r\n", (char *)boundary);
   ptr += strlen (ptr);
   sprintf (ptr,
@@ -699,6 +699,18 @@ U64_BuildMultipartForm (CONST_STRPTR boundary, CONST_STRPTR field_name,
   sprintf (ptr, "\r\n");
   ptr += strlen (ptr);
 
+  /* Extra fields after the file part */
+  for (i = 0; i < num_extras; i++)
+    {
+      sprintf (ptr, "--%s\r\n", (char *)boundary);
+      ptr += strlen (ptr);
+      sprintf (ptr, "Content-Disposition: form-data; name=\"%s\"\r\n\r\n",
+               (char *)extra_fields[i]);
+      ptr += strlen (ptr);
+      sprintf (ptr, "%s\r\n", (char *)extra_values[i]);
+      ptr += strlen (ptr);
+    }
+
   /* Add final boundary */
   sprintf (ptr, "--%s--\r\n", (char *)boundary);
   ptr += strlen (ptr);
@@ -714,7 +726,8 @@ U64_HttpPostMultipart (U64Connection *conn, CONST_STRPTR path,
                        CONST_STRPTR field_name, CONST_STRPTR filename,
                        CONST_STRPTR file_content_type, CONST UBYTE *file_data,
                        ULONG file_size, CONST_STRPTR *extra_fields,
-                       CONST_STRPTR *extra_values, ULONG num_extras)
+                       CONST_STRPTR *extra_values, ULONG num_extras,
+                       HttpRequest *result_req)
 {
   HttpRequest req;
   UBYTE *form_data;
@@ -764,8 +777,14 @@ U64_HttpPostMultipart (U64Connection *conn, CONST_STRPTR path,
   /* Free form data */
   FreeMem (form_data, form_size + 1);
 
-  /* Free response if any (caller doesn't need it for multipart posts) */
-  if (req.response)
+  /* Hand response back to caller if requested, else free it. */
+  if (result_req)
+    {
+      result_req->status_code = req.status_code;
+      result_req->response = req.response;
+      result_req->response_size = req.response_size;
+    }
+  else if (req.response)
     {
       FreeMem (req.response, req.response_size + 1);
     }

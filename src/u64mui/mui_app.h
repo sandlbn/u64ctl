@@ -8,10 +8,19 @@
 #include <exec/types.h>
 #include <intuition/intuition.h>
 #include <libraries/mui.h>
+#include <clib/alib_protos.h>  /* DoMethod, MakeLibrary, etc. */
 
 #include "ultimate64_amiga.h"
 
-/* MUI Object creation macros */
+/* MUI Object creation macros. libraries/mui.h already supplies HGroup,
+ * SimpleButton and Label with different semantics; we override them with the
+ * customised forms this app relies on. #undef first to avoid redefine
+ * warnings.
+ */
+#undef HGroup
+#undef SimpleButton
+#undef Label
+
 #define ApplicationObject   MUI_NewObject(MUIC_Application
 #define WindowObject        MUI_NewObject(MUIC_Window
 #define VGroup              MUI_NewObject(MUIC_Group

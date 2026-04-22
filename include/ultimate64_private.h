@@ -70,12 +70,20 @@ typedef struct
 
 /* Internal functions */
 LONG U64_HttpRequest (U64Connection *conn, HttpRequest *req);
+/* Post multipart/form-data.
+ *
+ * When result_req is NULL the function frees the response internally (legacy
+ * fire-and-forget behaviour). When non-NULL the request's status_code, response
+ * and response_size are written to *result_req; the caller then owns
+ * result_req->response and must FreeMem it.
+ */
 LONG U64_HttpPostMultipart (U64Connection *conn, CONST_STRPTR path,
                             CONST_STRPTR field_name, CONST_STRPTR filename,
                             CONST_STRPTR file_content_type,
                             CONST UBYTE *file_data, ULONG file_size,
                             CONST_STRPTR *extra_fields,
-                            CONST_STRPTR *extra_values, ULONG num_extras);
+                            CONST_STRPTR *extra_values, ULONG num_extras,
+                            HttpRequest *result_req);
 LONG U64_ParseJSON (CONST_STRPTR json, CONST_STRPTR key, STRPTR value,
                     ULONG value_size);
 STRPTR U64_BuildURL (U64Connection *conn, CONST_STRPTR path);

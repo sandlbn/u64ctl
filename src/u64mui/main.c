@@ -5,6 +5,7 @@
 #include <dos/dos.h>
 #include <dos/var.h>
 #include <exec/memory.h>
+#include <exec/tasks.h>
 #include <exec/types.h>
 #include <intuition/classusr.h>
 #include <intuition/intuition.h>
@@ -25,6 +26,19 @@
 #include <string.h>
 
 #include "mui_app.h"
+
+/* Guaranteed stack size (bytes). MUI + our handler stack footprint is around
+ * 8 KB; we request 32 KB for headroom. If the caller's stack is already at
+ * least this big we run directly, otherwise we StackSwap onto a private
+ * buffer. */
+#define REQUIRED_STACK 32768
+
+/* StackSwapStruct kept as a module global so the compiler doesn't try to
+ * reach it via stack-relative addressing across a StackSwap. */
+static struct StackSwapStruct g_sss;
+static UBYTE *g_new_stack = NULL;
+
+static int AppMain (int argc, char *argv[]);
 
 /* Version string */
 static const char version[] = "$VER: Ultimate64_MUI 0.3.1 (2025)";
@@ -69,6 +83,40 @@ struct NewMenu MainMenu[]
 /* Main function */
 int
 main (int argc, char *argv[])
+{
+  struct Process *proc = (struct Process *)FindTask (NULL);
+  ULONG current_stack
+      = (ULONG)proc->pr_Task.tc_SPUpper - (ULONG)proc->pr_Task.tc_SPLower;
+  int retval;
+
+  /* If caller already gave us enough stack, run in-place. */
+  if (current_stack >= REQUIRED_STACK)
+    return AppMain (argc, argv);
+
+  /* Otherwise allocate a bigger stack and swap to it for the duration of the
+   * program. */
+  g_new_stack = AllocMem (REQUIRED_STACK, MEMF_PUBLIC);
+  if (!g_new_stack)
+    {
+      printf ("Out of memory for stack\n");
+      return 20;
+    }
+
+  g_sss.stk_Lower = g_new_stack;
+  g_sss.stk_Upper = (ULONG)(g_new_stack + REQUIRED_STACK);
+  g_sss.stk_Pointer = (APTR)(g_new_stack + REQUIRED_STACK);
+
+  StackSwap (&g_sss);
+  retval = AppMain (argc, argv);
+  StackSwap (&g_sss);
+
+  FreeMem (g_new_stack, REQUIRED_STACK);
+  g_new_stack = NULL;
+  return retval;
+}
+
+static int
+AppMain (int argc, char *argv[])
 {
   struct AppData data;
   BOOL running = TRUE;
@@ -414,9 +462,11 @@ main (int argc, char *argv[])
   if (data.connection)
     {
       U64_Disconnect (data.connection);
+      data.connection = NULL;
     }
 
-  /* Close configuration window if open */
+  Delay (5); /* 100ms — let network settle before tearing down libs */
+
   if (data.config_window)
     {
       set (data.config_window, MUIA_Window_Open, FALSE);

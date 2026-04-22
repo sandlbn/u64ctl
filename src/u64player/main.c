@@ -4,6 +4,7 @@
 
 #include <dos/dos.h>
 #include <exec/memory.h>
+#include <exec/tasks.h>
 #include <exec/types.h>
 #include <libraries/mui.h>
 
@@ -18,6 +19,16 @@
 #include <time.h>
 
 #include "player.h"
+
+/* Guaranteed stack size (bytes). MUI + SID-playback + song-length-DB load
+ * can burn through ~10-12KB; we request 48 KB headroom. StackSwap onto a
+ * private buffer if the caller's stack is smaller. */
+#define REQUIRED_STACK 49152
+
+static struct StackSwapStruct g_sss;
+static UBYTE *g_new_stack = NULL;
+
+static int AppMain(void);
 
 /* Version string */
 static const char version[] = "$VER: u64sidplayer 0.3.2 (2025)";
@@ -107,14 +118,13 @@ struct ObjApp *CreateApp(void)
 void DisposeApp(struct ObjApp *obj)
 {
     if (obj) {
-        /* NEW: Stop timer device */
         StopTimerDevice();
-
         FreePlaylists(obj);
         FreeSongLengthDB(obj);
 
         if (obj->connection) {
             U64_Disconnect(obj->connection);
+            obj->connection = NULL;
         }
 
         if (obj->App) {
@@ -125,8 +135,38 @@ void DisposeApp(struct ObjApp *obj)
     }
 }
 
-/* Main function */
+/* Main function — swaps to a private stack if caller's stack is too small,
+ * then runs AppMain() and swaps back. */
 int main(void)
+{
+    struct Process *proc = (struct Process *)FindTask(NULL);
+    ULONG current_stack =
+        (ULONG)proc->pr_Task.tc_SPUpper - (ULONG)proc->pr_Task.tc_SPLower;
+    int retval;
+
+    if (current_stack >= REQUIRED_STACK)
+        return AppMain();
+
+    g_new_stack = AllocMem(REQUIRED_STACK, MEMF_PUBLIC);
+    if (!g_new_stack) {
+        printf("Out of memory for stack\n");
+        return 20;
+    }
+
+    g_sss.stk_Lower = g_new_stack;
+    g_sss.stk_Upper = (ULONG)(g_new_stack + REQUIRED_STACK);
+    g_sss.stk_Pointer = (APTR)(g_new_stack + REQUIRED_STACK);
+
+    StackSwap(&g_sss);
+    retval = AppMain();
+    StackSwap(&g_sss);
+
+    FreeMem(g_new_stack, REQUIRED_STACK);
+    g_new_stack = NULL;
+    return retval;
+}
+
+static int AppMain(void)
 {
     int result = RETURN_FAIL;
     BOOL running = TRUE;
@@ -214,10 +254,7 @@ int main(void)
             }
 
             // Build wait signal mask - include timer if running
-            ULONG waitSignals = signals | SIGBREAKF_CTRL_C;
-            if (TimerRunning && TimerSig) {
-                waitSignals |= TimerSig;
-            }
+            ULONG waitSignals = signals | SIGBREAKF_CTRL_C | TimerWaitMask();
 
             // Only wait if we have signals to wait for
             if (waitSignals & ~SIGBREAKF_CTRL_C) {  // If more than just CTRL_C
@@ -238,6 +275,8 @@ int main(void)
 
         SaveConfig(objApp);
         DisposeApp(objApp);
+        Delay(5);
+
         result = RETURN_OK;
     }
 

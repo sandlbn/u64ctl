@@ -11,6 +11,7 @@
 #include <intuition/intuition.h>
 #include <libraries/mui.h>
 #include <devices/timer.h>
+#include <clib/alib_protos.h>  /* DoMethod, etc. */
 
 #include "ultimate64_amiga.h"
 #include "ultimate64_private.h"
@@ -229,12 +230,6 @@ extern struct Library *MUIMasterBase;
 extern struct Library *AslBase;
 extern struct ObjApp *objApp;
 
-/* Timer globals (shared between timer.c and main.c) */
-extern struct MsgPort      *TimerPort;
-extern struct timerequest  *TimerReq;
-extern ULONG                TimerSig;
-extern BOOL                 TimerRunning;
-
 /* main.c */
 BOOL InitLibs(void);
 void CleanupLibs(void);
@@ -251,6 +246,7 @@ void StopTimerDevice(void);
 void StartPeriodicTimer(void);
 void StopPeriodicTimer(void);
 BOOL CheckTimerSignal(ULONG sigs);
+ULONG TimerWaitMask(void);  /* returns signal bit to OR into Wait(), or 0 */
 
 /* md5.c */
 void MD5Init(MD5_CTX *ctx);

@@ -10,11 +10,17 @@
 
 #include "player.h"
 
-/* Timer globals (extern declarations in player.h) */
-struct MsgPort      *TimerPort   = NULL;
-struct timerequest  *TimerReq    = NULL;
-ULONG                TimerSig    = 0;
-BOOL                 TimerRunning = FALSE;
+/* Timer state is module-private; cross-TU access goes through TimerWaitMask()
+ * so we never rely on -fbaserel-unfriendly extern globals for the hot loop. */
+static struct MsgPort      *TimerPort   = NULL;
+static struct timerequest  *TimerReq    = NULL;
+static ULONG                TimerSig    = 0;
+static BOOL                 TimerRunning = FALSE;
+
+ULONG TimerWaitMask(void)
+{
+    return TimerRunning ? TimerSig : 0;
+}
 
 BOOL StartTimerDevice(void)
 {

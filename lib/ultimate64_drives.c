@@ -433,31 +433,31 @@ U64_MountDisk (U64Connection *conn, CONST_STRPTR filename,
     }
   U64_DEBUG ("Base filename: %s", base_filename);
 
-  /* POST with raw binary data and query parameters */
-  sprintf (path, "/v1/drives/%s:mount?type=%s&mode=%s", drive_id, type_str,
-           mode_str);
-  if (run)
-    {
-      strcat (path, "&run=true");
-    }
+  /* POST multipart/form-data with fields: file (disk image), mode, type.
+   * Matches the canonical Rust reference:
+   *   curl -X POST host/v1/drives/a:mount -F file=@disk.d64 -F mode=readwrite -F type=d64
+   */
+  sprintf (path, "/v1/drives/%s:mount", drive_id);
 
-  U64_DEBUG ("Mount endpoint with params: %s", path);
-  U64_DEBUG ("Content-Type: application/octet-stream");
-  U64_DEBUG ("Method: POST");
-  U64_DEBUG ("Body size: %ld bytes", file_size);
+  {
+    CONST_STRPTR extra_fields[2];
+    CONST_STRPTR extra_values[2];
+    extra_fields[0] = (CONST_STRPTR) "mode";
+    extra_values[0] = (CONST_STRPTR) mode_str;
+    extra_fields[1] = (CONST_STRPTR) "type";
+    extra_values[1] = (CONST_STRPTR) type_str;
 
-  /* Setup HTTP request with raw binary data */
-  memset (&req, 0, sizeof (req));
-  req.method = HTTP_POST;
-  req.path = path;
-  req.content_type = "application/octet-stream";
-  req.body = file_data;
-  req.body_size = file_size;
+    U64_DEBUG ("Mount endpoint: %s", path);
+    U64_DEBUG ("Multipart fields: file=%s, mode=%s, type=%s",
+               base_filename, mode_str, type_str);
+    U64_DEBUG ("File body size: %ld bytes", file_size);
 
-  U64_DEBUG ("Sending mount request with raw binary data...");
-
-  /* Execute request */
-  result = U64_HttpRequest (conn, &req);
+    memset (&req, 0, sizeof (req));
+    result = U64_HttpPostMultipart (
+        conn, path, (CONST_STRPTR) "file", (CONST_STRPTR) base_filename,
+        (CONST_STRPTR) "application/octet-stream", file_data, file_size,
+        extra_fields, extra_values, 2, &req);
+  }
 
   U64_DEBUG ("Mount request completed");
   U64_DEBUG ("HTTP result code: %ld (%s)", result,
@@ -465,32 +465,54 @@ U64_MountDisk (U64Connection *conn, CONST_STRPTR filename,
   U64_DEBUG ("HTTP status code: %d", req.status_code);
   U64_DEBUG ("Response size: %lu bytes", (unsigned long)req.response_size);
 
-  /* Check response */
-  if (req.response && req.response_size > 0)
+  /* Parse response. The firmware ALWAYS returns JSON of the shape
+   *   {"Subsys": N, "Ftype": N, "command": N, "file": "...", "errors": [...]}
+   * — on success the errors array is empty. A naive substring search for
+   * "error" would trip on that key and turn every success into a failure, so
+   * we use the HTTP status code as the source of truth and only inspect the
+   * body to extract a human-readable message on failure. */
+  if (req.status_code >= 400)
     {
-      U64_DEBUG ("Response: %.200s", req.response);
-
-      /* Look for error indicators in response */
-      if (strstr (req.response, "error") || strstr (req.response, "Error")
-          || strstr (req.response, "failed")
-          || strstr (req.response, "Failed"))
+      if (error_details)
         {
-          if (error_details)
+          char *error_msg = AllocMem (256, MEMF_PUBLIC);
+          if (error_msg)
             {
-              char *error_msg = AllocMem (256, MEMF_PUBLIC);
-              if (error_msg)
+              /* Try to pull the first quoted string out of the errors array.
+               * Works for {"errors":["invalid type"]} and similar. */
+              const char *body = req.response ? (const char *)req.response : "";
+              const char *key = strstr (body, "\"errors\"");
+              const char *lbr = key ? strchr (key, '[') : NULL;
+              const char *q1 = lbr ? strchr (lbr, '"') : NULL;
+              const char *q2 = q1 ? strchr (q1 + 1, '"') : NULL;
+
+              if (q1 && q2 && q2 > q1 + 1)
                 {
-                  sprintf (error_msg, "Ultimate64 error: %.200s",
-                           req.response);
-                  *error_details = error_msg;
+                  int n = (int)(q2 - q1 - 1);
+                  if (n > 200)
+                    n = 200;
+                  sprintf (error_msg, "Ultimate64: %.*s", n, q1 + 1);
                 }
+              else
+                {
+                  sprintf (error_msg,
+                           "Mount failed (HTTP %d)", req.status_code);
+                }
+              *error_details = error_msg;
             }
-          FreeMem (req.response, req.response_size + 1);
-          FreeMem (file_data, file_size);
-          conn->last_error = U64_ERR_GENERAL;
-          return U64_ERR_GENERAL;
         }
 
+      if (req.response)
+        FreeMem (req.response, req.response_size + 1);
+      FreeMem (file_data, file_size);
+      conn->last_error = U64_ERR_GENERAL;
+      U64_DEBUG ("=== MountDisk Result: FAILED (HTTP %d) ===", req.status_code);
+      return U64_ERR_GENERAL;
+    }
+
+  if (req.response)
+    {
+      U64_DEBUG ("Response: %.200s", req.response);
       FreeMem (req.response, req.response_size + 1);
     }
 
