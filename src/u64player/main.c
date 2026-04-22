@@ -19,6 +19,25 @@
 #include <time.h>
 
 #include "player.h"
+#include "md5set.h"
+
+/* File names for persistent user state — all live in the program directory. */
+#define HEARD_FILENAME      "heard.txt"
+#define FAVOURITES_FILENAME "favourites.txt"
+#define SESSION_FILENAME    "session.u64pl"
+
+/* Build a path "PROGDIR/<name>" into out. Returns TRUE on success. */
+static BOOL
+build_progdir_path(char *out, ULONG out_size, CONST_STRPTR name)
+{
+    BPTR lock = GetProgramDir();
+    char progdir[256];
+    if (!lock || !NameFromLock(lock, progdir, sizeof(progdir))) return FALSE;
+    strncpy(out, progdir, out_size - 1);
+    out[out_size - 1] = '\0';
+    AddPart(out, (STRPTR)name, out_size);
+    return TRUE;
+}
 
 /* Guaranteed stack size (bytes). MUI + SID-playback + song-length-DB load
  * can burn through ~10-12KB; we request 48 KB headroom. StackSwap onto a
@@ -119,6 +138,32 @@ void DisposeApp(struct ObjApp *obj)
 {
     if (obj) {
         StopTimerDevice();
+
+        /* Persist user state before freeing playlist data. */
+        {
+            char path[512];
+            if (obj->heard_db
+                && build_progdir_path(path, sizeof(path), HEARD_FILENAME)) {
+                MD5Set_Save(obj->heard_db, path);
+            }
+            if (obj->favourites
+                && build_progdir_path(path, sizeof(path), FAVOURITES_FILENAME)) {
+                MD5Set_Save(obj->favourites, path);
+            }
+            /* Session restore: snapshot the current playlist. If it's empty,
+             * delete any stale saved session so we don't restore a ghost. */
+            if (build_progdir_path(path, sizeof(path), SESSION_FILENAME)) {
+                if (obj->playlist_count > 0) {
+                    SavePlaylistToFile(obj, path);
+                } else {
+                    DeleteFile(path);
+                }
+            }
+        }
+
+        MD5Set_Free(obj->heard_db);     obj->heard_db = NULL;
+        MD5Set_Free(obj->favourites);   obj->favourites = NULL;
+
         FreePlaylists(obj);
         FreeSongLengthDB(obj);
 
@@ -189,6 +234,30 @@ static int AppMain(void)
 
         LoadConfig(objApp);
 
+        /* Load persistent user sets (heard + favourites). Absence of the
+         * files just yields empty sets, which is fine. */
+        objApp->heard_db = MD5Set_Create();
+        objApp->favourites = MD5Set_Create();
+        {
+            char path[512];
+            if (build_progdir_path(path, sizeof(path), HEARD_FILENAME))
+                MD5Set_Load(objApp->heard_db, path);
+            if (build_progdir_path(path, sizeof(path), FAVOURITES_FILENAME))
+                MD5Set_Load(objApp->favourites, path);
+
+            /* Session restore: if a prior session was saved, reload it now
+             * (before AutoLoadSongLengths so its playlist-refresh loop can
+             * populate durations). */
+            if (build_progdir_path(path, sizeof(path), SESSION_FILENAME)) {
+                BPTR test = Open(path, MODE_OLDFILE);
+                if (test) {
+                    Close(test);
+                    U64_DEBUG("restoring session playlist from %s", path);
+                    LoadPlaylistFromFile(objApp, path);
+                }
+            }
+        }
+
         set(objApp->BTN_Play, MUIA_Disabled, TRUE);
         set(objApp->BTN_Stop, MUIA_Disabled, TRUE);
         set(objApp->BTN_Next, MUIA_Disabled, TRUE);
@@ -205,6 +274,34 @@ static int AppMain(void)
         }
 
         AutoLoadSongLengths(objApp);
+
+        /* After the DB is ready, report "X of Y SIDs heard" as a one-shot
+         * status so the user sees their HVSC completion progress. */
+        if (objApp->heard_db && objApp->heard_db->count > 0) {
+            char msg[160];
+            ULONG total = objApp->songlength_db
+                ? objApp->songlength_db->entry_count : 0;
+            if (total > 0) {
+                /* avoid float — percent * 100, scaled integer maths */
+                ULONG scaled = (objApp->heard_db->count * 10000UL) / total;
+                sprintf(msg, "%lu of %lu HVSC SIDs heard (%lu.%02lu%%)",
+                        (unsigned long)objApp->heard_db->count,
+                        (unsigned long)total,
+                        (unsigned long)(scaled / 100),
+                        (unsigned long)(scaled % 100));
+            } else {
+                sprintf(msg, "%lu unique SIDs heard",
+                        (unsigned long)objApp->heard_db->count);
+            }
+            APP_UpdateStatus(msg);
+        }
+
+        /* If the user clicked Quit while the songlengths parser was running,
+         * the parser flags it on objApp and bails; honour it here so the
+         * event loop doesn't wait forever for a signal that already fired. */
+        if (objApp->quit_requested) {
+            running = FALSE;
+        }
 
         while (running) {
            signals = 0;
@@ -244,6 +341,7 @@ static int AppMain(void)
                     case EVENT_SEARCH_CLEAR: APP_SearchClear(); break;
                     case EVENT_SEARCH_NEXT: APP_SearchNext(); break;
                     case EVENT_SEARCH_PREV: APP_SearchPrev(); break;
+                    case EVENT_TOGGLE_FAVOURITE: APP_ToggleFavourite(); break;
                     case MUIV_Application_ReturnID_Quit: running = FALSE; break;
                 }
             }

@@ -17,6 +17,7 @@
 
 #include "player.h"
 #include "file_utils.h"
+#include "md5set.h"
 
 /* Simple cache for current song info to prevent corruption */
 static struct {
@@ -282,6 +283,13 @@ PlayCurrentSong(struct ObjApp *obj)
     /* Set proper total time for current subsong */
     obj->state = PLAYER_PLAYING;
     obj->current_time = 0;
+
+    /* Phosphor-style heard tracker: remember we've played this MD5. The
+     * set only flips dirty if it's a newly-heard SID, so no I/O cost on
+     * replays. Saved to heard.txt on DisposeApp. */
+    if (obj->heard_db) {
+        MD5Set_Insert(obj->heard_db, obj->current_entry->md5);
+    }
 
     /* Get duration for the specific subsong being played */
     obj->total_time = FindSongLength(obj, obj->current_entry->md5, current_subsong);

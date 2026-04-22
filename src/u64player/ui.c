@@ -246,6 +246,7 @@ void CreateWindowMain(struct ObjApp *obj)
     obj->BTN_Stop = U64SimpleButton("Stop");
     obj->BTN_Next = U64SimpleButton(">>");
     obj->BTN_Prev = U64SimpleButton("<<");
+    obj->BTN_Favourite = U64SimpleButton("*");  /* toggle favourite */
 
     obj->CHK_Shuffle = U64CheckMark(FALSE);
     obj->CHK_Repeat = U64CheckMark(FALSE);
@@ -322,6 +323,7 @@ void CreateWindowMain(struct ObjApp *obj)
         Child, obj->BTN_Play,
         Child, obj->BTN_Stop,
         Child, obj->BTN_Next,
+        Child, obj->BTN_Favourite,
         Child, MUI_NewObject(MUIC_Rectangle, MUIA_Weight, 10, TAG_DONE), /* spacer */
         Child, obj->CHK_Shuffle,
         Child, U64Label("Shuffle"),
@@ -422,6 +424,17 @@ void CreateWindowMainEvents(struct ObjApp *obj)
 
     DoMethod(obj->BTN_Prev, MUIM_Notify, MUIA_Pressed, FALSE,
              obj->App, 2, MUIM_Application_ReturnID, EVENT_PREV);
+
+    DoMethod(obj->BTN_Favourite, MUIM_Notify, MUIA_Pressed, FALSE,
+             obj->App, 2, MUIM_Application_ReturnID, EVENT_TOGGLE_FAVOURITE);
+
+    /* Keyboard shortcuts via MUIA_ControlChar (press Amiga+letter). */
+    set(obj->BTN_Play,      MUIA_ControlChar, (ULONG)'p');
+    set(obj->BTN_Stop,      MUIA_ControlChar, (ULONG)'s');
+    set(obj->BTN_Next,      MUIA_ControlChar, (ULONG)'n');
+    set(obj->BTN_Prev,      MUIA_ControlChar, (ULONG)'b');
+    set(obj->BTN_Favourite, MUIA_ControlChar, (ULONG)'h');
+    set(obj->BTN_RemoveFile, MUIA_ControlChar, (ULONG)'d');
 
     DoMethod(obj->CHK_Shuffle, MUIM_Notify, MUIA_Selected, MUIV_EveryTime,
              obj->App, 2, MUIM_Application_ReturnID, EVENT_SHUFFLE);

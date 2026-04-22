@@ -21,6 +21,7 @@
 #include "player.h"
 #include "file_utils.h"
 #include "string_utils.h"
+#include "md5set.h"
 
 /* Simple ULONG -> string helper (local to this module) */
 static void
@@ -295,6 +296,9 @@ BOOL LoadPlaylistFromFile(struct ObjApp *obj, CONST_STRPTR filename)
             entry->duration = DEFAULT_SONG_LENGTH;
         }
 
+        /* Sync favourite flag from persistent set. */
+        entry->is_favourite = MD5Set_Contains(obj->favourites, entry->md5);
+
         if (!obj->playlist_head) {
             obj->playlist_head = entry;
         } else {
@@ -471,6 +475,9 @@ BOOL AddPlaylistEntry(struct ObjApp *obj, CONST_STRPTR filename)
     /* Calculate MD5 */
     CalculateMD5(file_data, file_size, entry->md5);
 
+    /* Restore favourite flag from persistent set. */
+    entry->is_favourite = MD5Set_Contains(obj->favourites, entry->md5);
+
     /* Parse SID header for basic subsong count */
     UWORD header_subsongs = ParseSIDSubsongs(file_data, file_size);
     entry->subsongs = header_subsongs;
@@ -478,21 +485,15 @@ BOOL AddPlaylistEntry(struct ObjApp *obj, CONST_STRPTR filename)
 
     /* Check if we have this SID in our songlength database */
     if (obj->songlength_db) {
-        SongLengthEntry *db_entry = obj->songlength_db;
+        SongLengthEntry *db_entry = SongDB_Find(obj->songlength_db, entry->md5);
+        if (db_entry) {
+            U64_DEBUG("Found %s in database: %d subsongs (header said %d)",
+                      FilePart(filename), db_entry->num_subsongs, header_subsongs);
 
-        while (db_entry) {
-            if (MD5Compare(db_entry->md5, entry->md5)) {
-                U64_DEBUG("Found %s in database: %d subsongs (header said %d)",
-                          FilePart(filename), db_entry->num_subsongs, header_subsongs);
-
-                /* Use database value if it's larger and reasonable */
-                if (db_entry->num_subsongs > header_subsongs
-                    && db_entry->num_subsongs <= 256) {
-                    entry->subsongs = db_entry->num_subsongs;
-                }
-                break;
+            if (db_entry->num_subsongs > header_subsongs
+                && db_entry->num_subsongs <= 256) {
+                entry->subsongs = db_entry->num_subsongs;
             }
-            db_entry = db_entry->next;
         }
     }
 
@@ -766,7 +767,11 @@ APP_UpdatePlaylistDisplay(void)
         }
 
         /* Build display string manually without sprintf */
-        strcpy(list_string, display_name);
+        list_string[0] = '\0';
+        if (entry->is_favourite) {
+            strcpy(list_string, "* ");
+        }
+        strcat(list_string, display_name);
 
         if (entry_subsongs > 1) {
             /* Add subsong info: " [1/12]" */

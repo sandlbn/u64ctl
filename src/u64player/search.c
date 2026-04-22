@@ -192,8 +192,11 @@ void UpdateFilteredPlaylistDisplay(void)
                 }
 
                 /* Build display string using safe operations */
-                strncpy(list_string, display_name, 200);
-                list_string[200] = '\0';
+                list_string[0] = '\0';
+                if (entry->is_favourite) {
+                    strcpy(list_string, "* ");
+                }
+                strncat(list_string, display_name, 200);
 
                 /* Add subsong and timing info */
                 if (entry->subsongs > 1) {

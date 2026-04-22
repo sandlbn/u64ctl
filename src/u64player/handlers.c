@@ -22,12 +22,49 @@
 #include "player.h"
 #include "file_utils.h"
 #include "string_utils.h"
+#include "md5set.h"
 
 void APP_UpdateStatus(CONST_STRPTR text)
 {
     if (objApp && objApp->TXT_Status) {
         set(objApp->TXT_Status, MUIA_Text_Contents, text);
     }
+}
+
+/* Toggle the "favourite" flag on the most relevant playlist entry:
+ *   1. the currently-playing track if there is one,
+ *   2. otherwise the currently-selected row in the playlist,
+ *   3. otherwise no-op (empty playlist).
+ * Keeps the persistent favourites set in sync so the flag survives restart. */
+BOOL APP_ToggleFavourite(void)
+{
+    if (!objApp || !objApp->favourites) return FALSE;
+
+    PlaylistEntry *target = objApp->current_entry;
+    if (!target) {
+        /* Fall back to the MUI-selected row. */
+        LONG active = -1;
+        get(objApp->LSV_PlaylistList, MUIA_List_Active, &active);
+        if (active < 0) return FALSE;
+
+        PlaylistEntry *e = objApp->playlist_head;
+        LONG i = 0;
+        while (e && i < active) { e = e->next; i++; }
+        target = e;
+    }
+    if (!target) return FALSE;
+
+    target->is_favourite = !target->is_favourite;
+    if (target->is_favourite) {
+        MD5Set_Insert(objApp->favourites, target->md5);
+        APP_UpdateStatus("Added to favourites");
+    } else {
+        MD5Set_Remove(objApp->favourites, target->md5);
+        APP_UpdateStatus("Removed from favourites");
+    }
+
+    APP_UpdatePlaylistDisplay();
+    return TRUE;
 }
 
 BOOL APP_GetSIDConfig(char *sid1_info, char *sid2_info, size_t buffer_size)

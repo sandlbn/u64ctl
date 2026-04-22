@@ -90,7 +90,8 @@ enum EVENT_IDS {
   EVENT_SEARCH_MODE_CHANGED,
   EVENT_SEARCH_CLEAR,
   EVENT_SEARCH_NEXT,
-  EVENT_SEARCH_PREV
+  EVENT_SEARCH_PREV,
+  EVENT_TOGGLE_FAVOURITE = 300
 };
 
 /* Playlist entry structure */
@@ -102,10 +103,11 @@ typedef struct PlaylistEntry
   ULONG duration; /* in seconds, 0 = unknown */
   UWORD subsongs;
   UWORD current_subsong;
+  BOOL is_favourite;  /* hearted — shown with '*' prefix, filterable */
   struct PlaylistEntry *next;
 } PlaylistEntry;
 
-/* Song length database entry */
+/* Song length database entry — chained into a bucket inside SongLengthDB. */
 typedef struct SongLengthEntry
 {
   UBYTE md5[MD5_HASH_SIZE];
@@ -113,6 +115,17 @@ typedef struct SongLengthEntry
   UWORD num_subsongs;
   struct SongLengthEntry *next;
 } SongLengthEntry;
+
+/* Song length database — hash table keyed on the low 12 bits of MD5[0..1].
+ * 4096 buckets × 4 bytes = 16 KB fixed overhead; expected chain length
+ * ~15 entries for HVSC-scale input.
+ */
+#define SONGDB_BUCKETS 4096
+struct SongLengthDB
+{
+  SongLengthEntry *buckets[SONGDB_BUCKETS];
+  ULONG entry_count;
+};
 
 /* Player state */
 typedef enum
@@ -154,6 +167,7 @@ struct ObjApp
   Object *BTN_Stop;
   Object *BTN_Next;
   Object *BTN_Prev;
+  Object *BTN_Favourite;   /* hearts the playing/selected track */
   Object *CHK_Shuffle;
   Object *CHK_Repeat;
 
@@ -180,9 +194,22 @@ struct ObjApp
   U64Connection *connection;
   PlaylistEntry *playlist_head;
   PlaylistEntry *current_entry;
-  SongLengthEntry *songlength_db;
+  struct SongLengthDB *songlength_db;
   ULONG playlist_count;
   ULONG current_index;
+
+  /* Set to TRUE when a long-running operation (e.g. songlengths parse)
+   * observed a MUIV_Application_ReturnID_Quit via its own DoMethod polling.
+   * main() honours this by skipping the event loop and going straight to
+   * cleanup, so the user's Quit isn't silently swallowed. */
+  BOOL quit_requested;
+
+  /* Persistent MD5 sets (ported from Phosphor):
+   *   heard_db   — every SID the user has ever played (heard.txt)
+   *   favourites — tracks the user hearted (favourites.txt)
+   * Both live in PROGDIR. NULL if load failed, set is created on demand. */
+  struct MD5Set *heard_db;
+  struct MD5Set *favourites;
 
   Object *MN_Playlist_Load;
   Object *MN_Playlist_Save;
@@ -268,6 +295,9 @@ BOOL CheckSongLengthsFile(char *filepath, ULONG filepath_size);
 void AutoLoadSongLengths(struct ObjApp *obj);
 BOOL APP_DownloadSongLengths(void);
 ULONG FindSongLength(struct ObjApp *obj, const UBYTE md5[MD5_HASH_SIZE], UWORD subsong);
+/* Returns the SongLengthEntry for md5 or NULL if not found. Use when you
+ * need both the duration and the subsong count without two lookups. */
+SongLengthEntry *SongDB_Find(struct SongLengthDB *db, const UBYTE md5[MD5_HASH_SIZE]);
 void FreeSongLengthDB(struct ObjApp *obj);
 
 /* playlist.c */
@@ -323,5 +353,6 @@ BOOL APP_Init(void);
 void APP_UpdateStatus(CONST_STRPTR text);
 BOOL APP_GetSIDConfig(char *sid1_info, char *sid2_info, size_t buffer_size);
 void APP_UpdateSIDConfigDisplay(void);
+BOOL APP_ToggleFavourite(void);
 
 #endif /* U64_PLAYER_H */

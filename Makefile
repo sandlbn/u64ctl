@@ -88,6 +88,7 @@ SIDPLAYER_SOURCES = \
 	$(SRCDIR)/u64player/config.c \
 	$(SRCDIR)/u64player/timer.c \
 	$(SRCDIR)/u64player/md5.c \
+	$(SRCDIR)/u64player/md5set.c \
 	$(SRCDIR)/u64player/sid.c \
 	$(SRCDIR)/u64player/songdb.c \
 	$(SRCDIR)/u64player/playlist.c \
