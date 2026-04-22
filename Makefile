@@ -43,9 +43,9 @@ RANLIB = m68k-amigaos-ranlib
 STRIP = m68k-amigaos-strip
 
 # Output names
-CLI_PROGRAM = u64ctl
-MUI_PROGRAM = u64ctlMUI  
-SIDPLAYER_PROGRAM = u64sidplayer
+CLI_PROGRAM = u64cli
+MUI_PROGRAM = u64mui
+SIDPLAYER_PROGRAM = u64player
 LIBRARY_NAME = libultimate64.a
 VERSION = 0.3.1
 
@@ -62,29 +62,51 @@ LIB_SOURCES = \
 
 # CLI program source files
 CLI_SOURCES = \
-	$(SRCDIR)/main_cli.c
+	$(SRCDIR)/u64cli/main.c \
+	$(SRCDIR)/u64cli/output.c \
+	$(SRCDIR)/u64cli/args.c \
+	$(SRCDIR)/u64cli/config.c \
+	$(SRCDIR)/u64cli/commands.c \
+	$(SRCDIR)/common/env_utils.c \
+	$(SRCDIR)/common/file_utils.c \
+	$(SRCDIR)/common/string_utils.c
 
 # MUI program source files (original MUI tool)
 MUI_SOURCES = \
-	$(SRCDIR)/main_mui.c
+	$(SRCDIR)/u64mui/main.c \
+	$(SRCDIR)/u64mui/config.c \
+	$(SRCDIR)/u64mui/ui.c \
+	$(SRCDIR)/u64mui/utils.c \
+	$(SRCDIR)/u64mui/handlers.c \
+	$(SRCDIR)/common/env_utils.c \
+	$(SRCDIR)/common/file_utils.c \
+	$(SRCDIR)/common/string_utils.c
 
 # SID Player source files (your player application)
 SIDPLAYER_SOURCES = \
-	$(SRCDIR)/main_player.c
-
-# Test program source files
-TEST_SOURCES = \
-	$(SRCDIR)/test_ultimate64.c
+	$(SRCDIR)/u64player/main.c \
+	$(SRCDIR)/u64player/config.c \
+	$(SRCDIR)/u64player/timer.c \
+	$(SRCDIR)/u64player/md5.c \
+	$(SRCDIR)/u64player/sid.c \
+	$(SRCDIR)/u64player/songdb.c \
+	$(SRCDIR)/u64player/playlist.c \
+	$(SRCDIR)/u64player/playback.c \
+	$(SRCDIR)/u64player/ui.c \
+	$(SRCDIR)/u64player/search.c \
+	$(SRCDIR)/u64player/handlers.c \
+	$(SRCDIR)/common/env_utils.c \
+	$(SRCDIR)/common/file_utils.c \
+	$(SRCDIR)/common/string_utils.c
 
 # Generate object files lists
 LIB_OBJECTS = $(patsubst $(LIBSRCDIR)/%.c,$(LIBOBJDIR)/%.o,$(LIB_SOURCES))
 CLI_OBJECTS = $(patsubst $(SRCDIR)/%.c,$(OBJDIR)/%.o,$(CLI_SOURCES))
 MUI_OBJECTS = $(patsubst $(SRCDIR)/%.c,$(OBJDIR)/%.o,$(MUI_SOURCES))
 SIDPLAYER_OBJECTS = $(patsubst $(SRCDIR)/%.c,$(OBJDIR)/%.o,$(SIDPLAYER_SOURCES))
-TEST_OBJECTS = $(patsubst $(SRCDIR)/%.c,$(OBJDIR)/%.o,$(TEST_SOURCES))
 
 # Include directories
-INCLUDES = -I$(INCDIR) -I$(SDKDIR) -I$(NDKDIR) -Iinclude
+INCLUDES = -I$(INCDIR) -I$(SDKDIR) -I$(NDKDIR) -Iinclude -I$(SRCDIR)/common -I$(SRCDIR)/u64cli -I$(SRCDIR)/u64mui -I$(SRCDIR)/u64player
 
 # Base compiler flags (common to both debug and release)
 BASE_CFLAGS = \
@@ -171,10 +193,9 @@ help:
 	@echo "  $(GREEN)debug$(RESET)     - Build everything in debug mode (with DPRINTF output)"
 	@echo "  $(GREEN)release$(RESET)   - Build everything in release mode (no debug output)"
 	@echo "  $(GREEN)library$(RESET)   - Build static library"
-	@echo "  $(GREEN)cli$(RESET)       - Build CLI tool (u64ctl)"
-	@echo "  $(GREEN)mui$(RESET)       - Build MUI control tool (u64ctlMUI)"
-	@echo "  $(GREEN)sidplayer$(RESET) - Build SID Player (u64sidplayer)"
-	@echo "  $(GREEN)test$(RESET)      - Build test program"
+	@echo "  $(GREEN)cli$(RESET)       - Build CLI tool (u64cli)"
+	@echo "  $(GREEN)mui$(RESET)       - Build MUI control tool (u64mui)"
+	@echo "  $(GREEN)player$(RESET)    - Build SID Player (u64player)"
 	@echo "  $(GREEN)complete$(RESET)  - Build everything (all 3 programs)"
 	@echo "  $(GREEN)clean$(RESET)     - Remove all build files"
 	@echo "  $(GREEN)dist$(RESET)      - Create distribution archive"
@@ -197,8 +218,8 @@ help:
 	@echo "  make clean debug        # Clean debug build (all programs, with debug)"
 	@echo "  make clean cli          # Build CLI tool only (release)"
 	@echo "  make clean mui          # Build MUI control tool only (release)"
-	@echo "  make clean sidplayer    # Build SID player only (release)"
-	@echo "  make DEBUG=1 sidplayer  # Debug build of SID player"
+	@echo "  make clean player       # Build SID player only (release)"
+	@echo "  make DEBUG=1 player     # Debug build of SID player"
 	@echo "  make CPU=68000 dist     # Release distribution for 68000"
 
 # Explicit debug target
@@ -254,8 +275,8 @@ $(OUTDIR)/$(MUI_PROGRAM): $(MUI_OBJECTS) $(OUTDIR)/$(LIBRARY_NAME)
 	@echo "$(GREEN)[OK]$(RESET) MUI control tool built: $@ ($(BUILD_TYPE))"
 
 # Build SID Player
-.PHONY: sidplayer
-sidplayer: dirs library $(OUTDIR)/$(SIDPLAYER_PROGRAM)
+.PHONY: player
+player: dirs library $(OUTDIR)/$(SIDPLAYER_PROGRAM)
 
 $(OUTDIR)/$(SIDPLAYER_PROGRAM): $(SIDPLAYER_OBJECTS) $(OUTDIR)/$(LIBRARY_NAME)
 	@echo "$(GREEN)[LD]$(RESET) Linking SID Player $@ ($(BUILD_TYPE))"
@@ -264,19 +285,9 @@ $(OUTDIR)/$(SIDPLAYER_PROGRAM): $(SIDPLAYER_OBJECTS) $(OUTDIR)/$(LIBRARY_NAME)
 	$(STRIP_CMD) $@
 	@echo "$(GREEN)[OK]$(RESET) SID Player built: $@ ($(BUILD_TYPE))"
 
-# Build test program
-.PHONY: test
-test: dirs library $(OUTDIR)/test_ultimate64
-
-$(OUTDIR)/test_ultimate64: $(TEST_OBJECTS) $(OUTDIR)/$(LIBRARY_NAME)
-	@echo "$(GREEN)[LD]$(RESET) Linking test program $@ ($(BUILD_TYPE))"
-	$(CC) $(CFLAGS) $(LDFLAGS) $(TEST_OBJECTS) -L$(OUTDIR) -lultimate64 \
-		$(BASE_LIBS) $(NETWORK_LIBS) $(JSON_LIBS) -o $@
-	@echo "$(GREEN)[OK]$(RESET) Test program built: $@ ($(BUILD_TYPE))"
-
 # Build everything
 .PHONY: complete
-complete: library cli mui sidplayer test
+complete: library cli mui player
 	@echo "$(GREEN)[OK]$(RESET) Complete build finished ($(BUILD_TYPE) mode)"
 
 # Compile library source files
@@ -300,7 +311,6 @@ clean:
 	@rm -f $(OUTDIR)/$(CLI_PROGRAM)
 	@rm -f $(OUTDIR)/$(MUI_PROGRAM)
 	@rm -f $(OUTDIR)/$(SIDPLAYER_PROGRAM)
-	@rm -f $(OUTDIR)/test_ultimate64
 	@rm -f $(OUTDIR)/*.map
 	@echo "$(GREEN)[OK]$(RESET) Clean complete"
 
@@ -337,10 +347,6 @@ dist: release
 	@-cp README.md $(DISTDIR)/Ultimate64_$(VERSION)/ 2>/dev/null || true
 	@-cp LICENSE $(DISTDIR)/Ultimate64_$(VERSION)/ 2>/dev/null || true
 	@-cp -r $(DOCDIR)/* $(DISTDIR)/Ultimate64_$(VERSION)/docs/ 2>/dev/null || true
-	
-	# Copy examples
-	@-cp $(SRCDIR)/main_mui.c $(DISTDIR)/Ultimate64_$(VERSION)/examples/ 2>/dev/null || true
-	@-cp $(SRCDIR)/test_ultimate64.c $(DISTDIR)/Ultimate64_$(VERSION)/examples/ 2>/dev/null || true
 	
 	# Create LHA archive
 	@cd $(DISTDIR) && lha -ao5 Ultimate64_$(VERSION).lha Ultimate64_$(VERSION)
@@ -388,18 +394,11 @@ size: all
 	@echo "Library object sizes:"
 	@size $(LIB_OBJECTS)
 
-# Run tests (in UAE or on real hardware)
-.PHONY: run-test
-run-test: test
-	@echo "$(CYAN)[TEST]$(RESET) Running tests..."
-	@echo "Copy $(OUTDIR)/test_ultimate64 to your Amiga and run it"
-
 # Include dependency files
 -include $(LIB_OBJECTS:.o=.d)
 -include $(CLI_OBJECTS:.o=.d)
 -include $(MUI_OBJECTS:.o=.d)
 -include $(SIDPLAYER_OBJECTS:.o=.d)
--include $(TEST_OBJECTS:.o=.d)
 
 # Phony targets summary
-.PHONY: all help dirs library cli mui sidplayer test complete clean distclean dist install docs config size run-test debug release
+.PHONY: all help dirs library cli mui player complete clean distclean dist install docs config size debug release
