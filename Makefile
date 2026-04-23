@@ -78,6 +78,8 @@ MUI_SOURCES = \
 	$(SRCDIR)/u64mui/ui.c \
 	$(SRCDIR)/u64mui/utils.c \
 	$(SRCDIR)/u64mui/handlers.c \
+	$(SRCDIR)/u64mui/assembly64.c \
+	$(SRCDIR)/u64mui/assembly_tab.c \
 	$(SRCDIR)/common/env_utils.c \
 	$(SRCDIR)/common/file_utils.c \
 	$(SRCDIR)/common/string_utils.c

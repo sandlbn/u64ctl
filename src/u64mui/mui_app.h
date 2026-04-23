@@ -98,7 +98,16 @@ enum
   ID_CONFIG_OK,
   ID_CONFIG_CANCEL,
   ID_CONFIG_OPEN,
-  ID_CONFIG_CLEAR
+  ID_CONFIG_CLEAR,
+
+  /* Assembly64 tab IDs */
+  ID_ASM_SEARCH = 200,
+  ID_ASM_PREV,
+  ID_ASM_NEXT,
+  ID_ASM_SHOW_FILES,
+  ID_ASM_RUN,
+  ID_ASM_MOUNT,
+  ID_ASM_DOWNLOAD
 };
 
 /* Application data structure */
@@ -155,6 +164,24 @@ struct AppData
   Object *str_song_num;
   Object *btn_play_sid;
   Object *btn_play_mod;
+
+  /* Assembly64 tab */
+  Object *str_asm_query;
+  Object *cyc_asm_category;
+  Object *cyc_asm_latest;
+  Object *cyc_asm_source;     /* CSDB / HVSC / OneLoad64 / … */
+  Object *cyc_asm_rank;       /* Any / ≥7 / ≥8 / ≥9 / Top rated first */
+  Object *cyc_asm_drive;      /* A / B target for .d64 mounts */
+  Object *btn_asm_search;
+  Object *btn_asm_prev;
+  Object *btn_asm_next;
+  Object *lst_asm_results;
+  Object *lst_asm_files;
+  Object *btn_asm_show_files;
+  Object *btn_asm_run;
+  Object *btn_asm_mount;      /* mount-without-run, for picking disk 2/3/… of a multi-disker */
+  Object *btn_asm_download;   /* save to local path instead of sending to U64 */
+  Object *txt_asm_info;
 
   /* Always visible - Text input */
   Object *str_type;
@@ -216,5 +243,12 @@ void DoPeek (struct AppData *data);
 void DoPoke (struct AppData *data);
 void DoPlaySID (struct AppData *data);
 void DoPlayMOD (struct AppData *data);
+
+/* Assembly64 tab (assembly_tab.c) */
+Object *CreateAssemblyTab     (struct AppData *data);
+void    ConnectAssemblyEvents (struct AppData *data);
+BOOL    AsmDispatch           (struct AppData *data, ULONG id);
+void    AsmKickstart          (struct AppData *data);  /* prefetch latest:1week */
+void    DisposeAssemblyState  (void);
 
 #endif /* U64_MUI_APP_H */

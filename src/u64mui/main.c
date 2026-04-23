@@ -46,9 +46,11 @@ static const char version[] = "$VER: Ultimate64_MUI 0.3.1 (2025)";
 /* Library bases */
 struct Library *MUIMasterBase = NULL;
 
-/* Tab titles */
+/* Tab titles — Assembly64 first because most users spend their time in
+ * browsing/downloading, less often in the low-level machine tabs. */
 static const char *tab_titles[]
-    = { (CONST_STRPTR) "Disks & Carts", (CONST_STRPTR) "Memory",
+    = { (CONST_STRPTR) "Assembly64",
+        (CONST_STRPTR) "Disks & Carts", (CONST_STRPTR) "Memory",
         (CONST_STRPTR) "Machine", (CONST_STRPTR) "Music", NULL };
 
 /* Drive options — the Ultimate64 only exposes two physical internal drives
@@ -183,6 +185,9 @@ AppMain (int argc, char *argv[])
       Child, data.register_tabs = RegisterObject, MUIA_Register_Titles,
   tab_titles,
 
+  /* Assembly64 tab — first so the browser is the landing page. */
+      Child, CreateAssemblyTab (&data),
+
   /* Disks & Carts tab */
       Child, VGroup, Child, GroupObject, MUIA_Frame, MUIV_Frame_Group,
   MUIA_FrameTitle, (CONST_STRPTR) "Disk Operations", Child, HGroup, Child,
@@ -254,7 +259,9 @@ AppMain (int argc, char *argv[])
   Child, HGroup, Child, data.btn_play_sid = SimpleButton ("Play SID"), Child,
   data.btn_play_mod = SimpleButton ("Play MOD"), End, End,
 
-  Child, VSpace (0), End, End,
+  Child, VSpace (0), End,
+
+  End,
 
   /* Always visible - Text input */
       Child, GroupObject, MUIA_Frame, MUIV_Frame_Group, MUIA_FrameTitle,
@@ -347,8 +354,17 @@ AppMain (int argc, char *argv[])
   DoMethod (data.btn_play_mod, MUIM_Notify, MUIA_Pressed, FALSE, data.app, 2,
             MUIM_Application_ReturnID, ID_PLAY_MOD);
 
+  /* Assembly64 tab notifications — must happen here (after data.app is
+   * assigned) and not inside CreateAssemblyTab, where the app object
+   * doesn't exist yet. */
+  ConnectAssemblyEvents (&data);
+
   /* Open window */
   set (data.window, MUIA_Window_Open, TRUE);
+
+  /* Prefetch the last week's Assembly64 releases so the first tab isn't
+   * empty — users can immediately scroll fresh demos before they type. */
+  AsmKickstart (&data);
 
   /* Main event loop */
   while (running)
@@ -453,6 +469,11 @@ AppMain (int argc, char *argv[])
         case ID_PLAY_MOD:
           DoPlayMOD (&data);
           break;
+
+        /* Assembly64 tab — dispatcher lives in assembly_tab.c. */
+        default:
+          (void)AsmDispatch (&data, id);
+          break;
         }
 
       if (running && signals)
@@ -477,6 +498,10 @@ AppMain (int argc, char *argv[])
 
   set (data.window, MUIA_Window_Open, FALSE);
   MUI_DisposeObject (data.app);
+
+  /* Safe to free our linked lists now — MUI has torn down the listviews
+   * that were holding raw pointers into them. */
+  DisposeAssemblyState ();
 
   U64_CleanupLibrary ();
   CloseLibrary (MUIMasterBase);

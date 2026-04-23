@@ -792,9 +792,20 @@ U64_HttpPostMultipart (U64Connection *conn, CONST_STRPTR path,
   return result;
 }
 
-LONG U64_DownloadToFile(CONST_STRPTR url, CONST_STRPTR local_filename, 
-                        void (*progress_callback)(ULONG bytes, APTR userdata), 
+/* Thin wrapper — kept for existing callers; new code should use the _Ex form
+ * so it can attach request headers (needed for e.g. Assembly64 client-id). */
+LONG U64_DownloadToFile(CONST_STRPTR url, CONST_STRPTR local_filename,
+                        void (*progress_callback)(ULONG bytes, APTR userdata),
                         APTR userdata)
+{
+    return U64_DownloadToFileEx(url, local_filename, NULL,
+                                progress_callback, userdata);
+}
+
+LONG U64_DownloadToFileEx(CONST_STRPTR url, CONST_STRPTR local_filename,
+                          CONST_STRPTR extra_headers,
+                          void (*progress_callback)(ULONG bytes, APTR userdata),
+                          APTR userdata)
 {
     LONG result = U64_ERR_GENERAL;
     BPTR file = 0;
@@ -813,6 +824,7 @@ LONG U64_DownloadToFile(CONST_STRPTR url, CONST_STRPTR local_filename,
     ULONG total_downloaded = 0;
     int status_code = 0;
     ULONG header_pos = 0;
+    LONG content_length = -1;   /* -1 unknown; else stop reading after this many body bytes */
 
     strncpy(current_url, url, sizeof(current_url) - 1);
     current_url[sizeof(current_url) - 1] = '\0';
@@ -889,16 +901,20 @@ LONG U64_DownloadToFile(CONST_STRPTR url, CONST_STRPTR local_filename,
             goto cleanup;
         }
 
-        /* Send HTTP request */
-        char request[1024];
+        /* Send HTTP request. extra_headers, if present, is an already-formed
+         * raw CRLF-terminated header block (e.g. "client-id: u64manager\r\n")
+         * inserted between Accept: and Connection:. */
+        char request[1536];
         int len = snprintf(request, sizeof(request),
                           "GET %s HTTP/1.1\r\n"
                           "Host: %s\r\n"
                           "User-Agent: Ultimate64-Amiga/1.0\r\n"
                           "Accept: */*\r\n"
+                          "%s"
                           "Connection: close\r\n"
                           "\r\n",
-                          path, hostname);
+                          path, hostname,
+                          extra_headers ? (char *)extra_headers : "");
 
         if (send(sockfd, request, len, 0) < 0) {
             result = U64_ERR_NETWORK;
@@ -982,6 +998,21 @@ LONG U64_DownloadToFile(CONST_STRPTR url, CONST_STRPTR local_filename,
                             goto cleanup;
                         }
 
+                        /* Parse Content-Length — nginx keep-alive means we
+                         * can't rely on recv()==0 to end the transfer. */
+                        {
+                            char *cl = strstr(header_buffer, "Content-Length:");
+                            if (!cl) cl = strstr(header_buffer, "content-length:");
+                            if (cl) {
+                                cl = strchr(cl, ':');
+                                if (cl) {
+                                    cl++;
+                                    while (*cl == ' ' || *cl == '\t') cl++;
+                                    content_length = atol(cl);
+                                }
+                            }
+                        }
+
                         /* Open output file */
                         file = Open(local_filename, MODE_NEWFILE);
                         if (!file) {
@@ -1029,9 +1060,15 @@ LONG U64_DownloadToFile(CONST_STRPTR url, CONST_STRPTR local_filename,
                 }
                 
                 if (chunk_count % 1000 == 0) {
-                    U64_DEBUG("Downloaded %lu bytes (%d chunks)", 
+                    U64_DEBUG("Downloaded %lu bytes (%d chunks)",
                              (unsigned long)total_downloaded, chunk_count);
                 }
+            }
+
+            /* End of body per Content-Length — avoid waiting on keep-alive. */
+            if (headers_parsed && content_length >= 0
+                && total_downloaded >= (ULONG)content_length) {
+                break;
             }
         }
 
@@ -1058,5 +1095,226 @@ cleanup:
     if (header_buffer) FreeMem(header_buffer, 4096);
 
     U64_DEBUG("=== STREAMING DOWNLOAD END: %ld ===", result);
+    return result;
+}
+
+/* Memory-buffered HTTP GET for small responses (JSON, short text).
+ *
+ * Parallels U64_DownloadToFileEx but accumulates the response body into an
+ * AllocVec'd buffer and returns it. The caller FreeVec's *out_buffer on
+ * success; on failure *out_buffer is untouched. */
+LONG U64_HttpGetURL(CONST_STRPTR url, CONST_STRPTR extra_headers,
+                    UBYTE **out_buffer, ULONG *out_size, UWORD *out_status)
+{
+    LONG result = U64_ERR_GENERAL;
+    char hostname[256];
+    char path[512];
+    char *host_start, *path_start;
+    int redirect_count = 0;
+    const int MAX_REDIRECTS = 5;
+    char current_url[1024];
+
+    int sockfd = -1;
+    char *chunk_buffer = NULL;
+    char *header_buffer = NULL;
+    BOOL headers_parsed = FALSE;
+    int status_code = 0;
+    ULONG header_pos = 0;
+    LONG content_length = -1;   /* -1 = unknown, else read exactly this many body bytes */
+
+    UBYTE *body = NULL;
+    ULONG body_cap = 0;
+    ULONG body_len = 0;
+
+    if (!url || !out_buffer || !out_size) return U64_ERR_INVALID;
+    *out_buffer = NULL;
+    *out_size = 0;
+    if (out_status) *out_status = 0;
+
+    strncpy(current_url, (char *)url, sizeof(current_url) - 1);
+    current_url[sizeof(current_url) - 1] = '\0';
+
+    chunk_buffer = AllocMem(READ_CHUNK_SIZE, MEMF_PUBLIC);
+    header_buffer = AllocMem(4096, MEMF_PUBLIC | MEMF_CLEAR);
+    if (!chunk_buffer || !header_buffer) { result = U64_ERR_MEMORY; goto cleanup; }
+
+    while (redirect_count < MAX_REDIRECTS) {
+        if (strncmp(current_url, "http://", 7) == 0)       host_start = current_url + 7;
+        else if (strncmp(current_url, "https://", 8) == 0) host_start = current_url + 8;
+        else { result = U64_ERR_INVALID; goto cleanup; }
+
+        path_start = strchr(host_start, '/');
+        if (!path_start) { strcpy(hostname, host_start); strcpy(path, "/"); }
+        else {
+            ULONG host_len = path_start - host_start;
+            CopyMem(host_start, hostname, host_len);
+            hostname[host_len] = '\0';
+            strcpy(path, path_start);
+        }
+
+        sockfd = socket(AF_INET, SOCK_STREAM, 0);
+        if (sockfd < 0) { result = U64_ERR_NETWORK; goto cleanup; }
+
+        /* 8s is plenty for a small JSON response; keeps the GUI responsive
+         * when Assembly64 is slow or the /search/entries endpoint returns
+         * 500 with a stuck keep-alive. */
+        struct timeval tv = { 8, 0 };
+        setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        setsockopt(sockfd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+        struct sockaddr_in server_addr;
+        struct hostent *server;
+        Forbid(); server = gethostbyname(hostname); Permit();
+        if (!server) { result = U64_ERR_NETWORK; goto cleanup; }
+        memset(&server_addr, 0, sizeof(server_addr));
+        server_addr.sin_family = AF_INET;
+        CopyMem(server->h_addr, &server_addr.sin_addr.s_addr, server->h_length);
+        server_addr.sin_port = htons(80);
+        if (connect(sockfd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
+            result = U64_ERR_NETWORK; goto cleanup;
+        }
+
+        char request[1536];
+        int len = snprintf(request, sizeof(request),
+                          "GET %s HTTP/1.1\r\n"
+                          "Host: %s\r\n"
+                          "User-Agent: Ultimate64-Amiga/1.0\r\n"
+                          "Accept: */*\r\n"
+                          "%s"
+                          "Connection: close\r\n"
+                          "\r\n",
+                          path, hostname,
+                          extra_headers ? (char *)extra_headers : "");
+        if (send(sockfd, request, len, 0) < 0) { result = U64_ERR_NETWORK; goto cleanup; }
+
+        headers_parsed = FALSE;
+        header_pos = 0;
+        status_code = 0;
+        body_len = 0;  /* drop anything from a prior redirect hop */
+
+        int chunks = 0;
+        while (chunks < 10000) {
+            struct timeval st = { 8, 0 };  /* per-chunk read timeout */
+            ULONG mask = 1L << sockfd;
+            int ready = WaitSelect(sockfd + 1, &mask, NULL, NULL, &st, NULL);
+            if (ready <= 0) break;
+
+            int got = recv(sockfd, chunk_buffer, READ_CHUNK_SIZE - 1, 0);
+            if (got <= 0) break;
+            chunks++;
+            chunk_buffer[got] = '\0';
+
+            if (!headers_parsed) {
+                if (header_pos + got < 4095) {
+                    CopyMem(chunk_buffer, header_buffer + header_pos, got);
+                    header_pos += got;
+                    header_buffer[header_pos] = '\0';
+
+                    char *hend = strstr(header_buffer, "\r\n\r\n");
+                    if (hend) {
+                        headers_parsed = TRUE;
+                        if (strncmp(header_buffer, "HTTP/", 5) == 0) {
+                            char *sp = strchr(header_buffer, ' ');
+                            if (sp) status_code = atoi(sp + 1);
+                        }
+
+                        if (status_code >= 301 && status_code <= 308) {
+                            char *loc = strstr(header_buffer, "Location: ");
+                            if (!loc) loc = strstr(header_buffer, "location: ");
+                            if (loc) {
+                                loc += 10;
+                                char *e = strstr(loc, "\r\n");
+                                if (e && (size_t)(e - loc) < sizeof(current_url) - 1) {
+                                    CopyMem(loc, current_url, e - loc);
+                                    current_url[e - loc] = '\0';
+                                    CloseSocket(sockfd); sockfd = -1;
+                                    redirect_count++;
+                                    goto next_redirect;
+                                }
+                            }
+                        }
+                        /* Keep going even on non-2xx: capture the error
+                         * body so the caller can surface useful diagnostics
+                         * (Assembly64 puts its errorCode there). The final
+                         * status is reported via the return code / out
+                         * buffer; a non-2xx status keeps result at
+                         * U64_ERR_GENERAL so callers can distinguish. */
+
+                        /* Parse Content-Length so we can stop reading as soon
+                         * as the advertised body has been delivered — nginx
+                         * ignores our Connection: close and keeps the socket
+                         * open, so we can't rely on recv()==0 to signal end. */
+                        {
+                            char *cl = strstr(header_buffer, "Content-Length:");
+                            if (!cl) cl = strstr(header_buffer, "content-length:");
+                            if (cl) {
+                                cl = strchr(cl, ':');
+                                if (cl) {
+                                    cl++;
+                                    while (*cl == ' ' || *cl == '\t') cl++;
+                                    content_length = atol(cl);
+                                }
+                            }
+                        }
+
+                        /* Carry over any body bytes that already arrived. */
+                        char *bstart = hend + 4;
+                        LONG already = (header_buffer + header_pos) - bstart;
+                        if (already > 0) {
+                            if (body_len + already + 1 > body_cap) {
+                                ULONG new_cap = body_cap ? body_cap * 2 : 4096;
+                                while (new_cap < body_len + (ULONG)already + 1) new_cap *= 2;
+                                UBYTE *nb = AllocVec(new_cap, MEMF_PUBLIC);
+                                if (!nb) { result = U64_ERR_MEMORY; goto cleanup; }
+                                if (body) { CopyMem(body, nb, body_len); FreeVec(body); }
+                                body = nb; body_cap = new_cap;
+                            }
+                            CopyMem(bstart, body + body_len, already);
+                            body_len += already;
+                        }
+                    }
+                } else { result = U64_ERR_GENERAL; goto cleanup; }
+            } else {
+                /* Body chunk — grow buffer and append. */
+                if (body_len + got + 1 > body_cap) {
+                    ULONG new_cap = body_cap ? body_cap * 2 : 4096;
+                    while (new_cap < body_len + (ULONG)got + 1) new_cap *= 2;
+                    UBYTE *nb = AllocVec(new_cap, MEMF_PUBLIC);
+                    if (!nb) { result = U64_ERR_MEMORY; goto cleanup; }
+                    if (body) { CopyMem(body, nb, body_len); FreeVec(body); }
+                    body = nb; body_cap = new_cap;
+                }
+                CopyMem(chunk_buffer, body + body_len, got);
+                body_len += got;
+            }
+
+            /* Stop as soon as the declared body has been received — avoids
+             * a 30s wait for a FIN the server won't send under keep-alive. */
+            if (headers_parsed && content_length >= 0
+                && body_len >= (ULONG)content_length) {
+                break;
+            }
+        }
+
+        if (headers_parsed) {
+            if (out_status) *out_status = (UWORD)status_code;
+            if (body) body[body_len] = '\0';  /* null-term for safe string use */
+            *out_buffer = body;
+            *out_size = body_len;
+            body = NULL;  /* ownership transferred */
+            result = (status_code >= 200 && status_code < 300)
+                     ? U64_OK : U64_ERR_GENERAL;
+        }
+        break;
+
+next_redirect:
+        continue;
+    }
+
+cleanup:
+    if (sockfd >= 0) CloseSocket(sockfd);
+    if (chunk_buffer) FreeMem(chunk_buffer, READ_CHUNK_SIZE);
+    if (header_buffer) FreeMem(header_buffer, 4096);
+    if (body) FreeVec(body);  /* only reached when we never got a headers-parsed response */
     return result;
 }

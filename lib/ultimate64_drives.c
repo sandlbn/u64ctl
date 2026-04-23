@@ -605,9 +605,15 @@ U64_MountDisk (U64Connection *conn, CONST_STRPTR filename,
               U64_DEBUG ("Reset successful, waiting for boot...");
               Delay (150); /* 3 seconds */
 
-              /* Type load and run commands */
+              /* Type load and run commands. Uppercase is required: after
+               * reset the C64 is in default uppercase/graphics charset, in
+               * which PETSCII 0xC1-0xDA (our mapping of lowercase 'a'-'z')
+               * renders as graphics characters, not letters. Sending "LOAD"
+               * maps to 0x4C 0x4F 0x41 0x44 which always read as readable
+               * capitals regardless of charset mode. */
               U64_DEBUG ("Typing load and run commands...");
-              LONG type_result = U64_TypeText (conn, "load\"*\",8,1\nrun\n");
+              LONG type_result
+                  = U64_TypeText (conn, "LOAD\"*\",8,1\nRUN\n");
               if (type_result != U64_OK)
                 {
                   U64_DEBUG ("Type command failed: %ld", type_result);

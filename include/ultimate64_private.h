@@ -114,9 +114,21 @@ BOOL U64_JsonGetBool (JsonParser *parser, BOOL *value);
 LONG U64_ParseDeviceInfo (CONST_STRPTR json, U64DeviceInfo *info);
 void U64_FreeDeviceInfo (U64DeviceInfo *info);
 LONG U64_ParseDeviceInfo (CONST_STRPTR json, U64DeviceInfo *info);
-LONG U64_DownloadToFile(CONST_STRPTR url, CONST_STRPTR local_filename, 
-                        void (*progress_callback)(ULONG bytes, APTR userdata), 
+LONG U64_DownloadToFile(CONST_STRPTR url, CONST_STRPTR local_filename,
+                        void (*progress_callback)(ULONG bytes, APTR userdata),
                         APTR userdata);
+/* Variant taking optional raw-CRLF extra request headers (NULL = none). */
+LONG U64_DownloadToFileEx(CONST_STRPTR url, CONST_STRPTR local_filename,
+                          CONST_STRPTR extra_headers,
+                          void (*progress_callback)(ULONG bytes, APTR userdata),
+                          APTR userdata);
+/* GET an arbitrary URL into an AllocVec'd buffer; caller FreeVec's on success
+ * OR whenever *out_buffer is non-NULL after the call (body is preserved even
+ * on non-2xx so the caller can read any error payload the server returned).
+ * Return code: U64_OK for 2xx, U64_ERR_GENERAL otherwise. *out_status, if
+ * non-NULL, receives the actual HTTP status code (0 if no response). */
+LONG U64_HttpGetURL(CONST_STRPTR url, CONST_STRPTR extra_headers,
+                    UBYTE **out_buffer, ULONG *out_size, UWORD *out_status);
 /* Debug system that respects global verbose flag */
 extern BOOL g_u64_verbose_mode;
 
