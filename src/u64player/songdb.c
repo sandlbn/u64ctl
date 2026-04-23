@@ -4,10 +4,6 @@
  *
  *     <32-char-md5-hex>=MM:SS MM:SS ... (one per subsong)
  *
- * We parse it once into a bucketed hash table and write a binary cache
- * ("<source>.cache") next to it. Subsequent runs validate the cache against
- * the source file's size + DateStamp and, on a match, skip parsing entirely.
- *
  * Lookups go through SongDB_Find() for O(~15) bucket-chain scans instead of
  * O(60 000) over a single linked list.
  */

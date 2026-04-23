@@ -5,6 +5,7 @@
  * both declared near the bottom of mui_app.h.
  */
 
+#include <dos/dos.h>
 #include <exec/memory.h>
 #include <exec/types.h>
 #include <intuition/intuition.h>
@@ -49,6 +50,15 @@ struct AsmState {
 };
 
 static struct AsmState g_asm;          /* one tab, one state */
+
+/* MUIC_Dtpic caches the datatype instance by the MUIA_Dtpic_Name string
+ * it saw at construction time; setting the attribute later does not
+ * reliably re-call the datatype on AmigaOS 3.x MUI. To get a new image
+ * on screen we dispose the old Dtpic and create a fresh one inside the
+ * wrapper group each time the preview changes. `dtp_asm_preview` in
+ * AppData is that wrapper group; `cur_preview_child` tracks the current
+ * widget living inside it so we can remove it before adding a new one. */
+static Object *cur_preview_child = NULL;
 
 /* Category dropdown. Parallel arrays: label shown to the user, aqlKey
  * appended to the AQL query when picked (NULL = no filter). The set
@@ -241,6 +251,22 @@ CreateAssemblyTab (struct AppData *data)
     data->btn_asm_run        = SimpleButton("Run");
     data->btn_asm_mount      = SimpleButton("Mount");
     data->btn_asm_download   = SimpleButton("Download...");
+
+    /* CSDB screenshot preview. We can't just hold a single Dtpic and
+     * swap its MUIA_Dtpic_Name: that doesn't refresh on AmigaOS 3.x MUI.
+     * Instead `dtp_asm_preview` is a wrapper VGroup; the real Dtpic (or
+     * a placeholder Text) is a child we dispose+replace on every new
+     * preview, bracketed by MUIM_Group_InitChange/ExitChange so MUI
+     * recomputes the layout. Reserve some on-screen space up front via
+     * MUIA_Weight — without it an empty group collapses to 0x0. */
+    cur_preview_child = MUI_NewObject(MUIC_Text,
+        MUIA_Frame,         MUIV_Frame_ImageButton,
+        MUIA_Text_Contents, (CONST_STRPTR)"\33c(no preview)",
+        TAG_DONE);
+    data->dtp_asm_preview = VGroup,
+        MUIA_Weight, 120,
+        Child, cur_preview_child,
+        End;
     data->cyc_asm_drive      = CycleObject,
         MUIA_Cycle_Entries, asm_drive_labels,
         MUIA_Cycle_Active, 0,
@@ -259,7 +285,10 @@ CreateAssemblyTab (struct AppData *data)
             Child, data->btn_asm_prev,
             Child, data->btn_asm_next,
             End,
-        Child, data->lst_asm_files,
+        Child, HGroup,
+            Child, data->lst_asm_files,
+            Child, data->dtp_asm_preview,
+            End,
         Child, HGroup,
             Child, Label("Drive:"),
             Child, data->cyc_asm_drive,
@@ -623,6 +652,103 @@ AsmDoListFiles (struct AppData *data)
                 (unsigned long)g_asm.file_count, item->name);
     }
     asm_status(data, (CONST_STRPTR)msg);
+
+    /* Try to show a CSDB screenshot alongside the file list. Best effort
+     * — skipped silently when the source isn't CSDB or no image exists.
+     * The path comes back in preview_path and rotates per call so the
+     * Dtpic actually reloads the new image.
+     *
+     * Reporting on failure cases matters: AmigaOS' datatypes.library
+     * renders PNG/JPG out of the box on most installs but GIF usually
+     * needs a separate gif.datatype. Surfacing the downloaded file's
+     * extension and size lets the user tell at a glance whether the
+     * image arrived (so the issue is a missing datatype) or not. */
+    {
+        static char preview_path[96];
+        preview_path[0] = '\0';
+        LONG prc = Asm_FetchScreenshot((CONST_STRPTR)item->id, item->category,
+                                       preview_path, sizeof(preview_path));
+
+        /* Build the new child widget based on the outcome, then swap it
+         * into the wrapper group. Keeping the swap in one place avoids
+         * half-initialised children if any branch early-returns. */
+        Object *new_child = NULL;
+        char pmsg[256]; pmsg[0] = '\0';
+
+        if (prc == U64_OK && preview_path[0]) {
+            ULONG fsize = 0;
+            BPTR lock = Lock((STRPTR)preview_path, ACCESS_READ);
+            if (lock) {
+                struct FileInfoBlock *fib = AllocDosObject(DOS_FIB, NULL);
+                if (fib) {
+                    if (Examine(lock, fib)) fsize = (ULONG)fib->fib_Size;
+                    FreeDosObject(DOS_FIB, fib);
+                }
+                UnLock(lock);
+            }
+            /* Fresh Dtpic with the name set at construction time — this
+             * is the only reliable way to make MUI/datatypes pull the
+             * new image on 3.x. Fallback to a text placeholder if the
+             * dtpic.mui class isn't installed on this system. */
+            new_child = MUI_NewObject(MUIC_Dtpic,
+                MUIA_Frame,         MUIV_Frame_ImageButton,
+                MUIA_Dtpic_Name,    (CONST_STRPTR)preview_path,
+                TAG_DONE);
+            if (!new_child) {
+                new_child = MUI_NewObject(MUIC_Text,
+                    MUIA_Frame,         MUIV_Frame_ImageButton,
+                    MUIA_Text_Contents, (CONST_STRPTR)"\33c(dtpic.mui missing)",
+                    TAG_DONE);
+            }
+            snprintf(pmsg, sizeof(pmsg),
+                     "%s  |  preview: %s (%lu bytes)",
+                     msg, preview_path, (unsigned long)fsize);
+        } else if (prc == U64_ERR_NOTFOUND) {
+            new_child = MUI_NewObject(MUIC_Text,
+                MUIA_Frame,         MUIV_Frame_ImageButton,
+                MUIA_Text_Contents, (CONST_STRPTR)"\33c(no preview)",
+                TAG_DONE);
+        } else if (prc == U64_ERR_INVALID && preview_path[0] == '!') {
+            new_child = MUI_NewObject(MUIC_Text,
+                MUIA_Frame,         MUIV_Frame_ImageButton,
+                MUIA_Text_Contents, (CONST_STRPTR)"\33c(https URL —\nsee status)",
+                TAG_DONE);
+            snprintf(pmsg, sizeof(pmsg),
+                     "%s  |  preview URL is https (can't fetch): %s",
+                     msg, preview_path + 1);
+        } else if (prc == U64_ERR_NETWORK) {
+            new_child = MUI_NewObject(MUIC_Text,
+                MUIA_Frame,         MUIV_Frame_ImageButton,
+                MUIA_Text_Contents, (CONST_STRPTR)"\33c(CSDB fetch failed)",
+                TAG_DONE);
+            snprintf(pmsg, sizeof(pmsg),
+                     "%s  |  preview: CSDB metadata fetch failed", msg);
+        } else {
+            new_child = MUI_NewObject(MUIC_Text,
+                MUIA_Frame,         MUIV_Frame_ImageButton,
+                MUIA_Text_Contents, (CONST_STRPTR)"\33c(download failed)",
+                TAG_DONE);
+            snprintf(pmsg, sizeof(pmsg),
+                     "%s  |  preview download failed (rc=%ld)", msg, (long)prc);
+        }
+
+        /* Atomic swap inside the wrapper group. Without InitChange/
+         * ExitChange MUI won't recompute the layout and the new child
+         * may not draw. */
+        if (new_child) {
+            DoMethod(data->dtp_asm_preview, MUIM_Group_InitChange);
+            if (cur_preview_child) {
+                DoMethod(data->dtp_asm_preview, OM_REMMEMBER, cur_preview_child);
+                MUI_DisposeObject(cur_preview_child);
+                cur_preview_child = NULL;
+            }
+            DoMethod(data->dtp_asm_preview, OM_ADDMEMBER, new_child);
+            cur_preview_child = new_child;
+            DoMethod(data->dtp_asm_preview, MUIM_Group_ExitChange);
+        }
+
+        if (pmsg[0]) asm_status(data, (CONST_STRPTR)pmsg);
+    }
 }
 
 static void

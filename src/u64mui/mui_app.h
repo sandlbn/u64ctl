@@ -181,6 +181,7 @@ struct AppData
   Object *btn_asm_run;
   Object *btn_asm_mount;      /* mount-without-run, for picking disk 2/3/… of a multi-disker */
   Object *btn_asm_download;   /* save to local path instead of sending to U64 */
+  Object *dtp_asm_preview;    /* MUIC_Dtpic — shows CSDB screenshot if any */
   Object *txt_asm_info;
 
   /* Always visible - Text input */

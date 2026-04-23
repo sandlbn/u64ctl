@@ -4,9 +4,6 @@
  *   - "heard" tracker   (set of SIDs the user has ever played)
  *   - "favourites"      (set of SIDs the user hearted)
  *
- * Ported from Phosphor's heard_db.rs / favourites logic; the storage format
- * is deliberately identical: one lowercase 32-char MD5 hex string per line,
- * sorted, blank lines ignored.
  */
 
 #ifndef U64_MD5SET_H

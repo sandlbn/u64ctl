@@ -65,6 +65,16 @@ LONG Asm_DownloadFile(CONST_STRPTR itemId, ULONG categoryId, ULONG fileId,
                       CONST_STRPTR suggested_name,
                       char *out_path, ULONG out_path_size);
 
+/* Fetch the CSDB screenshot for an Assembly64 item. Works only for items
+ * whose category comes from CSDB (ids 0-10 or 25) — for those the
+ * Assembly64 numeric id equals the CSDB release id, so we can query
+ *   http://csdb.dk/webservice/?type=release&depth=1&id=<id>
+ * parse out the <ScreenShot>URL</ScreenShot>, and download it to T:.
+ * Returns U64_OK on success; U64_ERR_NOTFOUND if the source isn't CSDB
+ * or the release has no screenshot. */
+LONG Asm_FetchScreenshot(CONST_STRPTR itemId, ULONG categoryId,
+                         char *out_path, ULONG out_path_size);
+
 /* Debug logger. Compile-time gated — set ASM_DEBUG to 1 to trace HTTP
  * activity into the shell's Output() stream; default 0 compiles to nothing. */
 #ifndef ASM_DEBUG
