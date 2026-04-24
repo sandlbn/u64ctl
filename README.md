@@ -1,6 +1,6 @@
 # Ultimate64 Manager & SID Player for AmigaOS 3.x
 
-Control an [Ultimate64 / Ultimate-II](https://ultimate64.com/) from a classic Amiga over the network.
+Control an [Commodore 64 Ultimate / Ultimate-II](https://ultimate64.com/) from a classic Amiga over the network.
 
 Three apps built from one library:
 
@@ -8,9 +8,14 @@ Three apps built from one library:
 - **u64cli** — shell tool for scripts and one-liners (reset, load, mount, peek/poke, play SID/MOD, type text).
 - **u64player** — MUI SID player with playlist and HVSC songlengths support.
 
+## Download
+
+- [Aminet: comm/misc/u64ctl](https://aminet.net/package/comm/misc/u64ctl)
+- [GitHub Releases](https://github.com/sandlbn/u64ctl/releases)
+
 ## Screenshots
 
-_TBD_
+![u64mui on AmigaOS](screenshots/screenshot.gif)
 
 ## Build
 
