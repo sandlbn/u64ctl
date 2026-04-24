@@ -47,7 +47,7 @@ CLI_PROGRAM = u64cli
 MUI_PROGRAM = u64mui
 SIDPLAYER_PROGRAM = u64player
 LIBRARY_NAME = libultimate64.a
-VERSION = 0.3.1
+VERSION = 0.4.0
 
 # Library source files
 LIB_SOURCES = \
@@ -324,36 +324,56 @@ distclean: clean
 	@rm -rf $(DISTDIR)
 	@rm -rf $(OUTDIR)
 
-# Create distribution archive
+# Create distribution archive u64ctl.lha.
+#
+# Layout on unpack (matches Amiga drawer-icon convention — the .info
+# file for drawer 'foo' lives NEXT TO 'foo', not inside it):
+#
+#   u64.info              <- drawer icon for 'u64/'
+#   u64/                  <- drawer the user double-clicks
+#     u64mui    + u64mui.info
+#     u64cli
+#     u64player + u64player.info
+#     libultimate64.a
+#     U64CTL.README
+#     Install-U64 + Install-U64.info
 .PHONY: dist
 dist: release
 	@echo "$(CYAN)[DIST]$(RESET) Creating distribution (release mode)..."
-	@mkdir -p $(DISTDIR)/Ultimate64_$(VERSION)
-	@mkdir -p $(DISTDIR)/Ultimate64_$(VERSION)/bin
-	@mkdir -p $(DISTDIR)/Ultimate64_$(VERSION)/lib
-	@mkdir -p $(DISTDIR)/Ultimate64_$(VERSION)/include
-	@mkdir -p $(DISTDIR)/Ultimate64_$(VERSION)/docs
-	@mkdir -p $(DISTDIR)/Ultimate64_$(VERSION)/examples
-	
-	# Copy binaries
-	@cp $(OUTDIR)/$(CLI_PROGRAM) $(DISTDIR)/Ultimate64_$(VERSION)/bin/
-	@-cp $(OUTDIR)/$(MUI_PROGRAM) $(DISTDIR)/Ultimate64_$(VERSION)/bin/ 2>/dev/null || true
-	@-cp $(OUTDIR)/$(SIDPLAYER_PROGRAM) $(DISTDIR)/Ultimate64_$(VERSION)/bin/ 2>/dev/null || true
-	
-	# Copy library
-	@cp $(OUTDIR)/$(LIBRARY_NAME) $(DISTDIR)/Ultimate64_$(VERSION)/lib/
-	
-	# Copy headers
-	@cp include/*.h $(DISTDIR)/Ultimate64_$(VERSION)/include/
-	
-	# Copy documentation
-	@-cp README.md $(DISTDIR)/Ultimate64_$(VERSION)/ 2>/dev/null || true
-	@-cp LICENSE $(DISTDIR)/Ultimate64_$(VERSION)/ 2>/dev/null || true
-	@-cp -r $(DOCDIR)/* $(DISTDIR)/Ultimate64_$(VERSION)/docs/ 2>/dev/null || true
-	
-	# Create LHA archive
-	@cd $(DISTDIR) && lha -ao5 Ultimate64_$(VERSION).lha Ultimate64_$(VERSION)
-	@echo "$(GREEN)[OK]$(RESET) Distribution created: $(DISTDIR)/Ultimate64_$(VERSION).lha"
+	@rm -rf $(DISTDIR)/u64ctl-stage
+	@mkdir -p $(DISTDIR)/u64ctl-stage/u64
+
+	# Drawer icon sits NEXT TO the drawer only — it's not an executable
+	# asset and doesn't belong beside the binaries. The Installer
+	# script reads it from the parent of its CWD via "/u64.info".
+	@-cp assets/u64.info $(DISTDIR)/u64ctl-stage/ 2>/dev/null || true
+
+	# Binaries go inside the drawer
+	@-cp $(OUTDIR)/$(CLI_PROGRAM)       $(DISTDIR)/u64ctl-stage/u64/ 2>/dev/null || true
+	@-cp $(OUTDIR)/$(MUI_PROGRAM)       $(DISTDIR)/u64ctl-stage/u64/ 2>/dev/null || true
+	@-cp $(OUTDIR)/$(SIDPLAYER_PROGRAM) $(DISTDIR)/u64ctl-stage/u64/ 2>/dev/null || true
+
+	# Optional developer library
+	@-cp $(OUTDIR)/$(LIBRARY_NAME) $(DISTDIR)/u64ctl-stage/u64/ 2>/dev/null || true
+
+	# README + installer + binary/installer icons all go inside the drawer
+	@-cp assets/U64CTL.README     $(DISTDIR)/u64ctl-stage/u64/ 2>/dev/null || true
+	@-cp assets/Install-U64       $(DISTDIR)/u64ctl-stage/u64/ 2>/dev/null || true
+	@-cp assets/Install-U64.info  $(DISTDIR)/u64ctl-stage/u64/ 2>/dev/null || true
+	@-cp assets/u64mui.info       $(DISTDIR)/u64ctl-stage/u64/ 2>/dev/null || true
+	@-cp assets/u64cli.info       $(DISTDIR)/u64ctl-stage/u64/ 2>/dev/null || true
+	@-cp assets/u64player.info    $(DISTDIR)/u64ctl-stage/u64/ 2>/dev/null || true
+
+	# Archive the stage contents (not the stage dir itself) so the
+	# drawer + drawer-icon unpack into the user's current directory.
+	@rm -f $(DISTDIR)/u64ctl.lha $(DISTDIR)/u64ctl.zip
+	@if command -v lha >/dev/null 2>&1; then \
+	    (cd $(DISTDIR)/u64ctl-stage && lha -ao5 ../u64ctl.lha *); \
+	    echo "$(GREEN)[OK]$(RESET) Distribution: $(DISTDIR)/u64ctl.lha"; \
+	else \
+	    (cd $(DISTDIR)/u64ctl-stage && zip -qr ../u64ctl.zip *); \
+	    echo "$(GREEN)[OK]$(RESET) Distribution: $(DISTDIR)/u64ctl.zip (install lha-archiver for LHA)"; \
+	fi
 
 # Install to Amiga (requires UAE or network share)
 .PHONY: install

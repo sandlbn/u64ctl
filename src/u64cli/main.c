@@ -15,7 +15,7 @@
 #include "cli.h"
 
 /* Version string */
-static const char version[] = "$VER: u64ctl 0.3.1 (2025)";
+static const char version[] = "$VER: u64cli 0.4.0 (2025)";
 
 /* Module globals */
 BOOL verbose = FALSE;

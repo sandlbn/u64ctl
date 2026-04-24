@@ -40,31 +40,40 @@ DoConnect (struct AppData *data)
       data->connection = NULL;
     }
 
-  /* Set verbose mode */
-  get (data->chk_verbose, MUIA_Selected, &data->verbose_mode);
-  U64_SetVerboseMode (data->verbose_mode);
 
-  /* Connect */
+  /* Connect. Note: U64_Connect only allocates a connection struct —
+   * it doesn't touch the network, so it succeeds even with a wrong
+   * host or no TCP stack. We probe the device with a real HTTP call
+   * (GetDeviceInfo -> GET /v1/info) and only surface "Connected" if
+   * that round-trip works. Otherwise we tear the stub down and
+   * report the failure, so the button never lies. */
+  UpdateStatus (data, (CONST_STRPTR) "Connecting...", TRUE);
   data->connection = U64_Connect (
       (CONST_STRPTR)data->host,
       (strlen (data->password) > 0) ? (CONST_STRPTR)data->password : NULL);
   if (data->connection)
     {
       U64DeviceInfo info;
+      LONG probe_rc = U64_GetDeviceInfo (data->connection, &info);
+      if (probe_rc != U64_OK)
+        {
+          sprintf (status, "Connection failed: %s (%s:80 unreachable?)",
+                   (char *)U64_GetErrorString (probe_rc), data->host);
+          UpdateStatus (data, (CONST_STRPTR)status, TRUE);
+          U64_Disconnect (data->connection);
+          data->connection = NULL;
+          return;
+        }
 
       sprintf (status, "Connected to %s", data->host);
       UpdateStatus (data, (CONST_STRPTR)status, TRUE);
 
-      /* Try to get device info */
-      if (U64_GetDeviceInfo (data->connection, &info) == U64_OK)
-        {
-          sprintf (status, "Device: %s (firmware %s)",
-                   info.product_name ? (char *)info.product_name : "Ultimate",
-                   info.firmware_version ? (char *)info.firmware_version
-                                         : "unknown");
-          UpdateStatus (data, (CONST_STRPTR)status, TRUE);
-          U64_FreeDeviceInfo (&info);
-        }
+      sprintf (status, "Device: %s (firmware %s)",
+               info.product_name ? (char *)info.product_name : "Ultimate",
+               info.firmware_version ? (char *)info.firmware_version
+                                     : "unknown");
+      UpdateStatus (data, (CONST_STRPTR)status, TRUE);
+      U64_FreeDeviceInfo (&info);
 
       /* Enable all controls */
       set (data->btn_reset, MUIA_Disabled, FALSE);

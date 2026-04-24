@@ -41,7 +41,7 @@ static UBYTE *g_new_stack = NULL;
 static int AppMain (int argc, char *argv[]);
 
 /* Version string */
-static const char version[] = "$VER: Ultimate64_MUI 0.3.1 (2025)";
+static const char version[] = "$VER: u64mui 0.4.0 (2025)";
 
 /* Library bases */
 struct Library *MUIMasterBase = NULL;
@@ -166,20 +166,18 @@ AppMain (int argc, char *argv[])
   200,
 
   WindowContents, VGroup,
-  /* Connection bar */
-      Child, HGroup, MUIA_Frame, MUIV_Frame_Group, Child,
-  data.btn_connect = SimpleButton ("Connect"), Child, HGroup, Child,
-  Label ("Verbose:"), Child,
-  data.chk_verbose = MUI_NewObject (MUIC_Image, MUIA_Image_Spec,
-                                    MUII_CheckMark, MUIA_InputMode,
-                                    MUIV_InputMode_Toggle, MUIA_Image_FreeVert,
-                                    TRUE, MUIA_Frame, MUIV_Frame_ImageButton,
-                                    MUIA_Background, MUII_ButtonBack,
-                                    MUIA_ShowSelState, TRUE,
-                                    MUIA_Selected, FALSE, TAG_DONE),
-  End, Child, HGroup, Child, Label ("Host:"), Child, TextObject,
-  MUIA_Text_Contents, (CONST_STRPTR)data.host, MUIA_Frame, MUIV_Frame_Text,
-  MUIA_UserData, MAKE_ID ('H', 'O', 'S', 'T'), End, End, End,
+  /* Connection bar — Connect button + current host label. */
+      Child, HGroup, MUIA_Frame, MUIV_Frame_Group,
+          Child, data.btn_connect = SimpleButton ("Connect"),
+          Child, HGroup,
+              Child, Label ("Host:"),
+              Child, TextObject,
+                  MUIA_Text_Contents, (CONST_STRPTR)data.host,
+                  MUIA_Frame, MUIV_Frame_Text,
+                  MUIA_UserData, MAKE_ID ('H', 'O', 'S', 'T'),
+                  End,
+              End,
+          End,
 
   /* Tabbed interface */
       Child, data.register_tabs = RegisterObject, MUIA_Register_Titles,
@@ -363,8 +361,21 @@ AppMain (int argc, char *argv[])
   set (data.window, MUIA_Window_Open, TRUE);
 
   /* Prefetch the last week's Assembly64 releases so the first tab isn't
-   * empty — users can immediately scroll fresh demos before they type. */
-  AsmKickstart (&data);
+   * empty — users can immediately scroll fresh demos before they type.
+   * Only run it if we have a TCP stack open: without bsdsocket.library,
+   * socket() hangs the task (see the fail-fast check in
+   * U64_HttpGetURL). When it's missing we warn in the status line so
+   * the user knows to start Roadshow/AmiTCP/Miami. */
+  {
+    extern struct Library *SocketBase;
+    if (SocketBase) {
+        AsmKickstart (&data);
+    } else {
+        UpdateStatus (&data,
+            (CONST_STRPTR) "No TCP stack running — start Roadshow/AmiTCP "
+                           "before connecting.", TRUE);
+    }
+  }
 
   /* Main event loop */
   while (running)

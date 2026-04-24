@@ -65,6 +65,13 @@ LONG Asm_DownloadFile(CONST_STRPTR itemId, ULONG categoryId, ULONG fileId,
                       CONST_STRPTR suggested_name,
                       char *out_path, ULONG out_path_size);
 
+/* Install a progress callback invoked from the HTTP loop every chunk
+ * while Asm_DownloadFile / Asm_FetchScreenshot run. The callback runs
+ * on the same task — keep it cheap; a MUI set() on a text widget is
+ * fine. Pass NULL,NULL to clear. */
+void Asm_SetProgressCallback(void (*cb)(ULONG bytes, APTR userdata),
+                             APTR userdata);
+
 /* Fetch the CSDB screenshot for an Assembly64 item. Works only for items
  * whose category comes from CSDB (ids 0-10 or 25) — for those the
  * Assembly64 numeric id equals the CSDB release id, so we can query

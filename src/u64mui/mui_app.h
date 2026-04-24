@@ -131,7 +131,6 @@ struct AppData
   /* Connection */
   Object *btn_connect;
   Object *txt_status;
-  Object *chk_verbose;
 
   /* Disks & Carts tab */
   Object *cyc_drive;

@@ -7,6 +7,11 @@
 #include <proto/dos.h>
 #include <proto/exec.h>
 
+/* For non-blocking connect: IoctlSocket/FIONBIO live in sys/ioctl.h,
+ * and EINPROGRESS/EWOULDBLOCK in sys/errno.h (bsdsocket.library). */
+#include <sys/ioctl.h>
+#include <sys/errno.h>
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -129,8 +134,16 @@ U64_HttpRequest (U64Connection *conn, HttpRequest *req)
   int bytes_received;
   char *json_start;
   int retry_count = 0;
-  const int MAX_RETRIES = 3;
+  /* Ultimate64 keeps its HTTP socket open after responding (keep-alive),
+   * so recv() never returns 0. We used to wait MAX_RETRIES * 30s for
+   * a close that never came — the user saw minutes of apparent hang
+   * after mount/reset commands. Now we parse Content-Length from the
+   * headers and break as soon as we've read the body; retries are
+   * reduced to 1 for cases where Content-Length is absent. */
+  const int MAX_RETRIES = 1;
   int chunk_count = 0;
+  LONG content_length = -1;   /* -1 = unknown, else stop after this many body bytes */
+  ULONG headers_end = 0;      /* offset of \r\n\r\n in response_buffer */
   extern struct Library *SocketBase;
   extern int errno_storage;
 
@@ -239,13 +252,35 @@ U64_HttpRequest (U64Connection *conn, HttpRequest *req)
   server_addr.sin_port = htons (conn->port);
 
   U64_DEBUG ("Connecting to server...");
-  if (connect (sockfd, (struct sockaddr *)&server_addr, sizeof (server_addr))
-      < 0)
-    {
-      U64_DEBUG ("Failed to connect: errno=%d", errno_storage);
-      result = U64_ERR_NETWORK;
-      goto cleanup;
-    }
+  /* Non-blocking connect with 10s bound — blocking connect() on an
+   * unreachable Ultimate (wrong IP, device off) stalls the GUI for
+   * the OS-level default minutes. */
+  {
+    LONG nb = 1;
+    IoctlSocket (sockfd, FIONBIO, (char *)&nb);
+    int crc = connect (sockfd,
+                       (struct sockaddr *)&server_addr,
+                       sizeof (server_addr));
+    if (crc < 0 && Errno () != EINPROGRESS && Errno () != EWOULDBLOCK)
+      {
+        U64_DEBUG ("Failed to connect: errno=%d", errno_storage);
+        result = U64_ERR_NETWORK; goto cleanup;
+      }
+    if (crc < 0)
+      {
+        struct timeval ct = { 10, 0 };
+        ULONG wmask = 1L << sockfd;
+        int ready = WaitSelect (sockfd + 1, NULL, &wmask, NULL, &ct, NULL);
+        if (ready <= 0) { result = U64_ERR_NETWORK; goto cleanup; }
+        LONG so_err = 0;
+        LONG slen = sizeof (so_err);
+        if (getsockopt (sockfd, SOL_SOCKET, SO_ERROR, &so_err, &slen) < 0
+            || so_err != 0)
+          { result = U64_ERR_NETWORK; goto cleanup; }
+      }
+    nb = 0;
+    IoctlSocket (sockfd, FIONBIO, (char *)&nb);
+  }
 
   U64_DEBUG ("Connected successfully");
 
@@ -290,29 +325,91 @@ U64_HttpRequest (U64Connection *conn, HttpRequest *req)
 
   U64_DEBUG ("Sending HTTP header (%d bytes)...", header_len);
 
-  /* Send header */
-  if (send (sockfd, request_header, header_len, 0) < 0)
-    {
-      U64_DEBUG ("Failed to send HTTP header: errno=%d", errno_storage);
-      result = U64_ERR_NETWORK;
-      goto cleanup;
-    }
+  /* Send header (loop — headers are small but we use the same pattern
+   * as the body send for safety). */
+  {
+    int hdr_sent = 0;
+    while (hdr_sent < header_len)
+      {
+        int chunk = send (sockfd, request_header + hdr_sent,
+                          header_len - hdr_sent, 0);
+        if (chunk < 0)
+          {
+            if (Errno () == EAGAIN || Errno () == EWOULDBLOCK)
+              {
+                struct timeval wt = { 10, 0 };
+                ULONG wmask = 1L << sockfd;
+                if (WaitSelect (sockfd + 1, NULL, &wmask, NULL, &wt,
+                                NULL) <= 0)
+                  { result = U64_ERR_NETWORK; goto cleanup; }
+                continue;
+              }
+            U64_DEBUG ("Failed to send header: errno=%d", errno_storage);
+            result = U64_ERR_NETWORK; goto cleanup;
+          }
+        if (chunk == 0) { result = U64_ERR_NETWORK; goto cleanup; }
+        hdr_sent += chunk;
+      }
+  }
 
   U64_DEBUG ("Header sent successfully");
 
-  /* Send body if present */
+  /* Send body if present. A single send() on a ~170KB .d64 upload
+   * typically returns after writing only what fits in the kernel TCP
+   * send buffer (often 16-32KB on bsdsocket). The old code treated
+   * any non-negative return as a complete send — so the Ultimate got
+   * a truncated multipart body, waited forever for more bytes, and
+   * our recv() then waited forever for a response that never came.
+   * This matched the user's "mount stuck AND Ultimate hangs" report.
+   * Fix: loop until all body bytes are flushed, yielding to
+   * WaitSelect on EAGAIN/EWOULDBLOCK. */
   if (req->body && req->body_size > 0)
     {
       U64_DEBUG ("Sending HTTP body (%lu bytes)...",
                  (unsigned long)req->body_size);
 
-      if (send (sockfd, req->body, req->body_size, 0) < 0)
+      ULONG body_sent = 0;
+      UBYTE *body_ptr = (UBYTE *)req->body;
+      while (body_sent < req->body_size)
         {
-          U64_DEBUG ("Failed to send HTTP body: errno=%d", errno_storage);
-          result = U64_ERR_NETWORK;
-          goto cleanup;
+          int chunk = send (sockfd, body_ptr + body_sent,
+                            req->body_size - body_sent, 0);
+          if (chunk < 0)
+            {
+              if (Errno () == EAGAIN || Errno () == EWOULDBLOCK)
+                {
+                  /* Socket full; wait up to 30s for room. */
+                  struct timeval wt = { 30, 0 };
+                  ULONG wmask = 1L << sockfd;
+                  if (WaitSelect (sockfd + 1, NULL, &wmask, NULL, &wt,
+                                  NULL) <= 0)
+                    {
+                      U64_DEBUG ("send timeout at %lu / %lu",
+                                 (unsigned long)body_sent,
+                                 (unsigned long)req->body_size);
+                      result = U64_ERR_NETWORK; goto cleanup;
+                    }
+                  continue;
+                }
+              U64_DEBUG ("Failed to send body at %lu/%lu: errno=%d",
+                         (unsigned long)body_sent,
+                         (unsigned long)req->body_size, errno_storage);
+              result = U64_ERR_NETWORK;
+              goto cleanup;
+            }
+          if (chunk == 0)
+            {
+              /* Peer closed the socket mid-upload. */
+              U64_DEBUG ("send returned 0 at %lu/%lu (peer closed)",
+                         (unsigned long)body_sent,
+                         (unsigned long)req->body_size);
+              result = U64_ERR_NETWORK;
+              goto cleanup;
+            }
+          body_sent += (ULONG)chunk;
         }
-      U64_DEBUG ("Body sent successfully");
+      U64_DEBUG ("Body fully sent (%lu bytes)",
+                 (unsigned long)req->body_size);
     }
 
   /* Receive response using PROVEN WORKING METHOD */
@@ -410,6 +507,40 @@ U64_HttpRequest (U64Connection *conn, HttpRequest *req)
           response_buffer[total_size] = '\0';
 
           retry_count = 0; /* Reset retry count on successful receive */
+
+          /* Once the headers have fully arrived, pick up Content-Length
+           * so we can stop reading exactly when the body is complete.
+           * Ultimate64 keeps the TCP connection open (keep-alive), so
+           * without this we'd WaitSelect until timeout. */
+          if (headers_end == 0)
+            {
+              char *eoh = strstr (response_buffer, "\r\n\r\n");
+              if (eoh)
+                {
+                  headers_end = (ULONG)(eoh - response_buffer) + 4;
+                  /* Save and restore the byte at eoh so case-insensitive
+                   * strstr on "Content-Length:" stays inside headers. */
+                  char save = response_buffer[headers_end];
+                  response_buffer[headers_end] = '\0';
+                  char *cl = strstr (response_buffer, "Content-Length:");
+                  if (!cl) cl = strstr (response_buffer, "content-length:");
+                  if (cl)
+                    {
+                      cl += 15;     /* length of "Content-Length:" */
+                      while (*cl == ' ' || *cl == '\t') cl++;
+                      content_length = atol (cl);
+                      U64_DEBUG ("Content-Length: %ld", content_length);
+                    }
+                  response_buffer[headers_end] = save;
+                }
+            }
+          /* Early exit: body is complete per Content-Length. */
+          if (headers_end > 0 && content_length >= 0
+              && total_size >= headers_end + (ULONG)content_length)
+            {
+              U64_DEBUG ("Body complete (CL=%ld), breaking", content_length);
+              break;
+            }
         }
     }
 
@@ -807,6 +938,11 @@ LONG U64_DownloadToFileEx(CONST_STRPTR url, CONST_STRPTR local_filename,
                           void (*progress_callback)(ULONG bytes, APTR userdata),
                           APTR userdata)
 {
+    /* Same defensive check as U64_HttpGetURL — no TCP stack, fail fast
+     * rather than hanging on the first socket() call. */
+    extern struct Library *SocketBase;
+    if (!SocketBase) return U64_ERR_NETWORK;
+
     LONG result = U64_ERR_GENERAL;
     BPTR file = 0;
     char hostname[256];
@@ -896,9 +1032,34 @@ LONG U64_DownloadToFileEx(CONST_STRPTR url, CONST_STRPTR local_filename,
         CopyMem(server->h_addr, &server_addr.sin_addr.s_addr, server->h_length);
         server_addr.sin_port = htons(80);
 
-        if (connect(sockfd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
-            result = U64_ERR_NETWORK;
-            goto cleanup;
+        /* Non-blocking connect with bounded wait (see U64_HttpGetURL
+         * for the rationale — blocking connect() can hang the UI for
+         * minutes on AmigaOS emulation when the host is unreachable). */
+        {
+            LONG nb = 1;
+            IoctlSocket(sockfd, FIONBIO, (char *)&nb);
+            int crc = connect(sockfd,
+                              (struct sockaddr *)&server_addr,
+                              sizeof(server_addr));
+            if (crc < 0 && Errno() != EINPROGRESS
+                        && Errno() != EWOULDBLOCK) {
+                result = U64_ERR_NETWORK; goto cleanup;
+            }
+            if (crc < 0) {
+                struct timeval ct = { 10, 0 };
+                ULONG wmask = 1L << sockfd;
+                int ready = WaitSelect(sockfd + 1, NULL, &wmask, NULL,
+                                       &ct, NULL);
+                if (ready <= 0) { result = U64_ERR_NETWORK; goto cleanup; }
+                LONG so_err = 0;
+                LONG slen = sizeof(so_err);
+                if (getsockopt(sockfd, SOL_SOCKET, SO_ERROR,
+                               &so_err, &slen) < 0 || so_err != 0) {
+                    result = U64_ERR_NETWORK; goto cleanup;
+                }
+            }
+            nb = 0;
+            IoctlSocket(sockfd, FIONBIO, (char *)&nb);
         }
 
         /* Send HTTP request. extra_headers, if present, is an already-formed
@@ -1106,6 +1267,20 @@ cleanup:
 LONG U64_HttpGetURL(CONST_STRPTR url, CONST_STRPTR extra_headers,
                     UBYTE **out_buffer, ULONG *out_size, UWORD *out_status)
 {
+    /* Without bsdsocket.library open, calling socket() dispatches
+     * through a NULL library base and locks the whole task (no timeout,
+     * no signal delivery). Bail out here so the caller gets a clean
+     * U64_ERR_NETWORK instead of a frozen UI. This is the single most
+     * common failure mode on AmigaOS where the TCP stack (Roadshow /
+     * AmiTCP / Miami) hasn't been started yet. */
+    extern struct Library *SocketBase;
+    if (!SocketBase) {
+        if (out_buffer) *out_buffer = NULL;
+        if (out_size)   *out_size = 0;
+        if (out_status) *out_status = 0;
+        return U64_ERR_NETWORK;
+    }
+
     LONG result = U64_ERR_GENERAL;
     char hostname[256];
     char path[512];
@@ -1170,8 +1345,45 @@ LONG U64_HttpGetURL(CONST_STRPTR url, CONST_STRPTR extra_headers,
         server_addr.sin_family = AF_INET;
         CopyMem(server->h_addr, &server_addr.sin_addr.s_addr, server->h_length);
         server_addr.sin_port = htons(80);
-        if (connect(sockfd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
-            result = U64_ERR_NETWORK; goto cleanup;
+
+        /* Non-blocking connect with bounded wait. A blocking connect() on
+         * an unreachable host can stall the whole process for minutes on
+         * AmigaOS emulation (Roadshow/AmiTCP) — SO_SNDTIMEO/SO_RCVTIMEO
+         * only affect send/recv, not the TCP handshake. We flip the
+         * socket to non-blocking, kick connect(), then WaitSelect() on
+         * the write mask for at most 8s. That's how the user sees a
+         * quick "Search failed" instead of a frozen GUI. */
+        {
+            LONG nb = 1;
+            IoctlSocket(sockfd, FIONBIO, (char *)&nb);
+            int crc = connect(sockfd,
+                              (struct sockaddr *)&server_addr,
+                              sizeof(server_addr));
+            if (crc < 0 && Errno() != EINPROGRESS
+                        && Errno() != EWOULDBLOCK) {
+                result = U64_ERR_NETWORK; goto cleanup;
+            }
+            if (crc < 0) {
+                struct timeval ct = { 8, 0 };
+                ULONG wmask = 1L << sockfd;
+                int ready = WaitSelect(sockfd + 1, NULL, &wmask, NULL,
+                                       &ct, NULL);
+                if (ready <= 0) {   /* 0=timeout, -1=error */
+                    result = U64_ERR_NETWORK; goto cleanup;
+                }
+                /* Check SO_ERROR to see if the connect() itself
+                 * succeeded — WaitSelect wakes on connect refused too. */
+                LONG so_err = 0;
+                LONG len = sizeof(so_err);
+                if (getsockopt(sockfd, SOL_SOCKET, SO_ERROR,
+                               &so_err, &len) < 0 || so_err != 0) {
+                    result = U64_ERR_NETWORK; goto cleanup;
+                }
+            }
+            /* Back to blocking for send()/recv() — the subsequent
+             * read loop already uses its own WaitSelect timeout. */
+            nb = 0;
+            IoctlSocket(sockfd, FIONBIO, (char *)&nb);
         }
 
         char request[1536];

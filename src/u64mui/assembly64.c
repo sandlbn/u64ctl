@@ -532,6 +532,21 @@ derive_extension(CONST_STRPTR name, char *out, ULONG out_size)
     out[out_size - 1] = '\0';
 }
 
+/* Optional progress callback for long downloads. Registered from the
+ * UI so the status line can tick as bytes arrive — without it the
+ * user can't tell a slow 200KB .d64 download on AmigaOS emulation
+ * (often 30+ seconds) from a real hang. */
+static void (*g_asm_progress_cb)(ULONG, APTR) = NULL;
+static APTR  g_asm_progress_ud = NULL;
+
+void
+Asm_SetProgressCallback(void (*cb)(ULONG bytes, APTR userdata),
+                        APTR userdata)
+{
+    g_asm_progress_cb = cb;
+    g_asm_progress_ud = userdata;
+}
+
 LONG
 Asm_DownloadFile(CONST_STRPTR itemId, ULONG categoryId, ULONG fileId,
                  CONST_STRPTR suggested_name,
@@ -558,7 +573,8 @@ Asm_DownloadFile(CONST_STRPTR itemId, ULONG categoryId, ULONG fileId,
             (unsigned long)categoryId, (unsigned long)fileId);
 
     return U64_DownloadToFileEx((CONST_STRPTR)url, (CONST_STRPTR)out_path,
-                                (CONST_STRPTR)ASM_HEADERS, NULL, NULL);
+                                (CONST_STRPTR)ASM_HEADERS,
+                                g_asm_progress_cb, g_asm_progress_ud);
 }
 
 /* ------------------------------------------------------------------ */

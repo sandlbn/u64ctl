@@ -50,7 +50,7 @@ static UBYTE *g_new_stack = NULL;
 static int AppMain(void);
 
 /* Version string */
-static const char version[] = "$VER: u64sidplayer 0.3.2 (2025)";
+static const char version[] = "$VER: u64player 0.4.0 (2025)";
 
 /* Global library bases */
 struct Library *MUIMasterBase = NULL;

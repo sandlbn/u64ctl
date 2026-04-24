@@ -126,6 +126,47 @@ static const char *const asm_drive_keys[]   = { "a",           "b"           };
 
 static void asm_status(struct AppData *data, CONST_STRPTR msg);
 
+/* Called by Asm_DownloadFile while the HTTP loop reads chunks. Runs on
+ * the main task while the download blocks, so MUI's event loop is NOT
+ * running — just calling set() on a text widget won't paint until we
+ * return. MUI_Redraw() with MADF_DRAWUPDATE forces the widget to
+ * repaint itself synchronously in our task context. */
+static void
+asm_download_progress(ULONG bytes, APTR userdata)
+{
+    struct AppData *data = (struct AppData *)userdata;
+    static ULONG last_reported = 0;
+    if (!data || !data->txt_status) return;
+    if (bytes != 0 && bytes - last_reported < 4096) return;
+    last_reported = bytes;
+
+    char msg[64];
+    if (bytes >= 1024)
+        sprintf(msg, "Downloading... %lu KB", (unsigned long)(bytes / 1024));
+    else
+        sprintf(msg, "Downloading... %lu B", (unsigned long)bytes);
+    set(data->txt_status, MUIA_Text_Contents, (CONST_STRPTR)msg);
+    /* Force an immediate paint — otherwise the new text sits in the
+     * widget but never appears on screen until the main loop resumes. */
+    MUI_Redraw(data->txt_status, MADF_DRAWUPDATE);
+}
+
+/* Toggle MUI's busy state around long-running HTTP calls. Setting
+ * MUIA_Application_Sleep=TRUE:
+ *   - flushes the pending status update (so "Searching..." actually
+ *     paints before we block on the network),
+ *   - blocks further user input,
+ *   - swaps the window pointer to the wait cursor.
+ * Without this the GUI appears to hang during DNS + connect on slow
+ * AmigaOS emulation TCP stacks — the user sees no busy indicator and
+ * thinks the app has crashed. */
+static void
+asm_busy(struct AppData *data, BOOL busy)
+{
+    if (data && data->app)
+        set(data->app, MUIA_Application_Sleep, busy);
+}
+
 /* ------------------------------------------------------------------ */
 /* MUI display hooks                                                   */
 /* ------------------------------------------------------------------ */
@@ -198,16 +239,27 @@ CreateAssemblyTab (struct AppData *data)
         MUIA_Cycle_Active, 0,
         End;
 
-    Object *row_query = HGroup,
-        Child, Label("Find:"),
-        Child, data->str_asm_query = StringObject,
-            MUIA_String_MaxLen, sizeof(g_asm.query) - 1,
+    /* Two-row query form — on low-resolution screens (320x200, 640x256)
+     * packing label + string + 4 cycles + Search into a single row
+     * leaves the Find field with barely a character's worth of space.
+     * Split into: row 1 = Find field (grows to fill), row 2 = the
+     * cycles with Search right-aligned so the button's clickable even
+     * when the window is narrow. */
+    Object *row_query = VGroup,
+        Child, HGroup,
+            Child, Label("Find:"),
+            Child, data->str_asm_query = StringObject,
+                MUIA_String_MaxLen, sizeof(g_asm.query) - 1,
+                End,
             End,
-        Child, data->cyc_asm_category,
-        Child, data->cyc_asm_latest,
-        Child, data->cyc_asm_source,
-        Child, data->cyc_asm_rank,
-        Child, data->btn_asm_search  = SimpleButton("Search"),
+        Child, HGroup,
+            Child, data->cyc_asm_category,
+            Child, data->cyc_asm_latest,
+            Child, data->cyc_asm_source,
+            Child, data->cyc_asm_rank,
+            Child, HSpace(0),
+            Child, data->btn_asm_search = SimpleButton("Search"),
+            End,
         End;
 
     /* Multi-column lists using a custom display hook that plucks fields
@@ -542,8 +594,10 @@ AsmDoSearch (struct AppData *data)
 
     asm_status(data, (CONST_STRPTR)"Searching Assembly64...");
 
+    asm_busy(data, TRUE);
     LONG rc = Asm_Search((CONST_STRPTR)g_asm.query, g_asm.offset, g_asm.page_size,
                          &g_asm.results, &g_asm.result_count);
+    asm_busy(data, FALSE);
     ASM_LOG("Asm_Search rc=%ld count=%lu", (long)rc,
             (unsigned long)g_asm.result_count);
     asm_refresh_results_list(data);
@@ -589,8 +643,11 @@ AsmDoPage (struct AppData *data, BOOL forward)
     Asm_FreeItems(g_asm.results); g_asm.results = NULL; g_asm.result_count = 0;
     g_asm.selected_item = NULL;
 
+    asm_status(data, (CONST_STRPTR)"Paging Assembly64...");
+    asm_busy(data, TRUE);
     LONG rc = Asm_Search((CONST_STRPTR)g_asm.query, g_asm.offset, g_asm.page_size,
                          &g_asm.results, &g_asm.result_count);
+    asm_busy(data, FALSE);
     asm_refresh_results_list(data);
 
     char msg[128];
@@ -631,8 +688,10 @@ AsmDoListFiles (struct AppData *data)
 
     asm_status(data, (CONST_STRPTR)"Fetching file list...");
     ASM_LOG("list files id=%s cat=%u", item->id, (unsigned)item->category);
+    asm_busy(data, TRUE);
     LONG rc = Asm_ListFiles((CONST_STRPTR)item->id, item->category,
                             &g_asm.files, &g_asm.file_count);
+    asm_busy(data, FALSE);
     ASM_LOG("Asm_ListFiles rc=%ld count=%lu",
             (long)rc, (unsigned long)g_asm.file_count);
     asm_refresh_files_list(data);
@@ -666,8 +725,10 @@ AsmDoListFiles (struct AppData *data)
     {
         static char preview_path[96];
         preview_path[0] = '\0';
+        asm_busy(data, TRUE);
         LONG prc = Asm_FetchScreenshot((CONST_STRPTR)item->id, item->category,
                                        preview_path, sizeof(preview_path));
+        asm_busy(data, FALSE);
 
         /* Build the new child widget based on the outcome, then swap it
          * into the wrapper group. Keeping the swap in one place avoids
@@ -782,12 +843,21 @@ AsmDoRun (struct AppData *data)
         return;
     }
 
+    /* Progress callback updates the status with a running byte count
+     * and forces redraw — needed because MUI's event loop is frozen
+     * while we're blocked in the download. We intentionally do NOT
+     * set MUIA_Application_Sleep here: on slow emulation TCP stacks
+     * the 30+ second download plus Sleep=TRUE makes the whole
+     * window appear locked even to WB (no mouse redraw, no window
+     * drag). The user sees progress ticking instead. */
     asm_status(data, (CONST_STRPTR)"Downloading from Assembly64...");
     char local_path[128];
+    Asm_SetProgressCallback(asm_download_progress, data);
     LONG rc = Asm_DownloadFile((CONST_STRPTR)g_asm.selected_item->id,
                                g_asm.selected_item->category,
                                f->id, (CONST_STRPTR)f->path,
                                local_path, sizeof(local_path));
+    Asm_SetProgressCallback(NULL, NULL);
     if (rc != U64_OK) {
         asm_status(data, (CONST_STRPTR)"Download failed");
         return;
@@ -795,7 +865,11 @@ AsmDoRun (struct AppData *data)
 
     /* For RunPRG / RunCRT / PlaySID we need the bytes in RAM; use the
      * existing common-file helper. For MountDisk the library wants a local
-     * filename and handles the read itself. */
+     * filename and handles the read itself. Each of these makes another
+     * blocking HTTP call to the Ultimate — uploading a 170 KB .d64 over
+     * emulation TCP is another ~10-30 s on top of the Assembly64
+     * download. Without an explicit status line here the user still sees
+     * "Downloading... 170 KB" and thinks the app is stuck. */
     STRPTR err = NULL;
     LONG run_rc = U64_ERR_GENERAL;
 
@@ -804,6 +878,13 @@ AsmDoRun (struct AppData *data)
         LONG drv = 0;
         get(data->cyc_asm_drive, MUIA_Cycle_Active, &drv);
         if (drv < 0 || drv > 1) drv = 0;
+        {
+            char up[96];
+            sprintf(up, "Mounting on Ultimate64 drive %s...",
+                    asm_drive_keys[drv]);
+            set(data->txt_status, MUIA_Text_Contents, (CONST_STRPTR)up);
+            MUI_Redraw(data->txt_status, MADF_DRAWUPDATE);
+        }
         run_rc = U64_MountDisk(data->connection, (CONST_STRPTR)local_path,
                                (CONST_STRPTR)asm_drive_keys[drv],
                                U64_MOUNT_RW, TRUE, &err);
@@ -815,6 +896,9 @@ AsmDoRun (struct AppData *data)
             DeleteFile((STRPTR)local_path);
             return;
         }
+        set(data->txt_status, MUIA_Text_Contents,
+            (CONST_STRPTR)"Uploading to Ultimate64...");
+        MUI_Redraw(data->txt_status, MADF_DRAWUPDATE);
         if (ext_matches((CONST_STRPTR)f->path, (CONST_STRPTR)".prg"))
             run_rc = U64_RunPRG(data->connection, file_data, file_size, &err);
         else if (ext_matches((CONST_STRPTR)f->path, (CONST_STRPTR)".crt"))
@@ -876,10 +960,12 @@ AsmDoMount (struct AppData *data)
 
     asm_status(data, (CONST_STRPTR)"Downloading disk image...");
     char local_path[128];
+    Asm_SetProgressCallback(asm_download_progress, data);
     LONG rc = Asm_DownloadFile((CONST_STRPTR)g_asm.selected_item->id,
                                g_asm.selected_item->category,
                                f->id, (CONST_STRPTR)f->path,
                                local_path, sizeof(local_path));
+    Asm_SetProgressCallback(NULL, NULL);
     if (rc != U64_OK) {
         asm_status(data, (CONST_STRPTR)"Download failed");
         return;
@@ -889,6 +975,13 @@ AsmDoMount (struct AppData *data)
     get(data->cyc_asm_drive, MUIA_Cycle_Active, &drv);
     if (drv < 0 || drv > 1) drv = 0;
 
+    {
+        char up[96];
+        sprintf(up, "Mounting on Ultimate64 drive %s...",
+                asm_drive_keys[drv]);
+        set(data->txt_status, MUIA_Text_Contents, (CONST_STRPTR)up);
+        MUI_Redraw(data->txt_status, MADF_DRAWUPDATE);
+    }
     STRPTR err = NULL;
     LONG mount_rc = U64_MountDisk(data->connection, (CONST_STRPTR)local_path,
                                   (CONST_STRPTR)asm_drive_keys[drv],
@@ -947,10 +1040,12 @@ AsmDoDownload (struct AppData *data)
 
     asm_status(data, (CONST_STRPTR)"Downloading...");
     char tmp_path[128];
+    Asm_SetProgressCallback(asm_download_progress, data);
     LONG rc = Asm_DownloadFile((CONST_STRPTR)g_asm.selected_item->id,
                                g_asm.selected_item->category,
                                f->id, (CONST_STRPTR)f->path,
                                tmp_path, sizeof(tmp_path));
+    Asm_SetProgressCallback(NULL, NULL);
     if (rc != U64_OK) {
         asm_status(data, (CONST_STRPTR)"Download failed");
         return;
@@ -1002,13 +1097,16 @@ AsmDispatch (struct AppData *data, ULONG id)
     return FALSE;
 }
 
-/* One-shot: populate the results pane with the last week's releases so the
- * Assembly64 tab isn't empty on first launch. Called once by main.c after
- * notifications are wired and the window is open. */
+/* One-shot: populate the results pane with a default query so the
+ * Assembly64 tab isn't empty on first launch. Called once by main.c
+ * after notifications are wired and the window is open.
+ *
+ * Leaves the "Latest" cycle at its default (index 0 = "Any time").
+ * Previously we forced "Week" so the initial page showed only fresh
+ * releases — but that trapped the user: any follow-up search kept
+ * the 1-week filter, so most queries came back empty. */
 void
 AsmKickstart (struct AppData *data)
 {
-    /* Seed the cycle gadgets to match what we're about to query. */
-    set(data->cyc_asm_latest, MUIA_Cycle_Active, 4 /* "Week" */);
     AsmDoSearch(data);
 }

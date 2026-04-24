@@ -1,0 +1,198 @@
+; Installer script for Ultimate64 Manager & SID Player
+; Tested with Commodore Installer V43.3+.
+;
+; Layout of the distribution archive this script expects:
+;   Install-U64            (this script)
+;   Install-U64.info
+;   u64mui      + u64mui.info
+;   u64cli      + u64cli.info
+;   u64player   + u64player.info
+;   libultimate64.a        (optional dev library)
+;   U64CTL.README
+;   U64CTL.README.info     (optional)
+;
+; Run as: Installer SCRIPT Install-U64 APPNAME "Ultimate64"
+
+(set #app-name "Ultimate64 Manager & SID Player")
+(set #app-ver  "0.4.0")
+
+; Keep the welcome short — Installer renders it behind the mode-select
+; dialog, and anything past ~6 lines shows through as overlap artefacts
+; on small screens.
+(welcome "Installs u64mui, u64cli and u64player " #app-ver ".")
+
+; The longer intro goes in its own modal message that paints over the
+; welcome/mode panel — no overlap risk.
+(message
+  #app-name " " #app-ver "\n\n"
+  "Three applications will be installed:\n"
+  "   u64mui    - MUI GUI with Assembly64 browser\n"
+  "   u64cli    - command-line tool\n"
+  "   u64player - SID player with playlist\n\n"
+  "Requirements: AmigaOS 3.0+, MUI 3.8+, bsdsocket.library\n"
+  "(Roadshow / AmiTCP / Miami or similar TCP stack)."
+)
+
+; ---------------------------------------------------------------------
+; Destination directory
+; ---------------------------------------------------------------------
+; Ask for the parent drawer. Use a user symbol (#parent-dir), not the
+; reserved @default-dest — Installer only lets scripts *read* @symbols,
+; and `(set @default-dest ...)` aborts with "Can't change type of an '@'
+; symbol" on cancel and sometimes on proceed too.
+(set #parent-dir
+  (askdir
+    (prompt "Where should " #app-name " be installed?\n"
+            "A 'u64' drawer will be created here.")
+    (help   "Pick the parent drawer. The installer creates a 'u64' "
+            "drawer inside it with the binaries and icons.")
+    (default "Work:")
+  )
+)
+
+(set #dest (tackon #parent-dir "u64"))
+
+(makedir #dest
+  (prompt "Creating drawer " #dest)
+  (help   @makedir-help)
+)
+
+; Install the drawer icon. It lives in the PARENT of this script
+; (the archive's top-level, where u64.info sits next to the u64/
+; drawer); "/u64.info" is AmigaDOS notation for "u64.info in the
+; parent of the current dir". We skip silently if the user launched
+; the script from a place where the parent lookup fails — the
+; drawer still works, it just gets the default Workbench icon.
+(if (exists "/u64.info")
+  (copyfiles
+    (prompt "Installing drawer icon...")
+    (help   @copyfiles-help)
+    (source "/u64.info")
+    (dest   #parent-dir)
+  )
+)
+
+; ---------------------------------------------------------------------
+; Binaries
+; ---------------------------------------------------------------------
+(complete 10)
+
+(copyfiles
+  (prompt "Installing u64mui (MUI GUI)...")
+  (help   @copyfiles-help)
+  (source "u64mui")
+  (dest   #dest)
+  (infos)
+)
+
+(complete 40)
+
+(copyfiles
+  (prompt "Installing u64cli (shell tool)...")
+  (help   @copyfiles-help)
+  (source "u64cli")
+  (dest   #dest)
+  (infos)
+)
+
+(complete 60)
+
+(copyfiles
+  (prompt "Installing u64player (SID player)...")
+  (help   @copyfiles-help)
+  (source "u64player")
+  (dest   #dest)
+  (infos)
+)
+
+(complete 80)
+
+; ---------------------------------------------------------------------
+; README
+; ---------------------------------------------------------------------
+(if (exists "U64CTL.README")
+  (copyfiles
+    (prompt "Installing README...")
+    (help   @copyfiles-help)
+    (source "U64CTL.README")
+    (dest   #dest)
+    (infos)
+  )
+)
+
+; ---------------------------------------------------------------------
+; Developer library (optional)
+; ---------------------------------------------------------------------
+(if (exists "libultimate64.a")
+  (
+    (set #want-lib
+      (askbool
+        (prompt "Install the static library libultimate64.a ?\n"
+                "Only useful if you want to build your own tools "
+                "that link against the Ultimate64 API.")
+        (help   "Answer No unless you are a developer.")
+        (default 0)
+      )
+    )
+    (if #want-lib
+      (copyfiles
+        (prompt "Installing libultimate64.a ...")
+        (help   @copyfiles-help)
+        (source "libultimate64.a")
+        (dest   #dest)
+      )
+    )
+  )
+)
+
+(complete 95)
+
+; ---------------------------------------------------------------------
+; ENV: configuration (optional — only touched when user opts in)
+; ---------------------------------------------------------------------
+(set #want-env
+  (askbool
+    (prompt "Configure your Ultimate64 IP address now?\n\n"
+            "This writes ENV:Ultimate64/Host (and ENVARC: so it "
+            "survives reboots). You can change it later from any "
+            "of the three apps.")
+    (help   "Skip this if you prefer to use the Settings dialog "
+            "inside u64mui or u64player.")
+    (default 1)
+  )
+)
+
+(if #want-env
+  (
+    (set #u64-host
+      (askstring
+        (prompt "Ultimate64 hostname or IP address:")
+        (help   "e.g. 10.0.0.64 or ultimate.local")
+        (default "10.0.0.64")
+      )
+    )
+    (makedir "ENV:Ultimate64")
+    (makedir "ENVARC:Ultimate64")
+    (textfile
+      (dest "ENV:Ultimate64/Host")
+      (append #u64-host)
+    )
+    (textfile
+      (dest "ENVARC:Ultimate64/Host")
+      (append #u64-host)
+    )
+  )
+)
+
+(complete 100)
+
+(message
+  #app-name " " #app-ver " is installed in:\n\n"
+  "    " #dest "\n\n"
+  "Double-click 'u64mui' (GUI) or run 'u64cli' from a shell.\n\n"
+  "If the apps hang on first launch, your TCP/IP stack "
+  "(Roadshow / AmiTCP / Miami) is not running — start it and "
+  "try again."
+)
+
+(exit)

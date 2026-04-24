@@ -1,26 +1,27 @@
-Short:        Ultimate64/Ultimate-II library and tools
+Short:        Ultimate64/Ultimate-II manager & SID player
 Author:       marcin@spoczynski.com (Marcin Spoczynski)
 Uploader:     marcin@spoczynski.com (Marcin Spoczynski)
 Type:         comm/misc
-Version:      0.2.0
+Version:      0.4.0
 Architecture: m68k-amigaos >= 3.0
 Requires:     MUI 3.8+, bsdsocket.library
 Distribution: Aminet
 Description:
-Ultimate64 Control Library provides complete control over Ultimate64 and 
-Ultimate-II devices from AmigaOS. It includes three applications: a command-line 
-tool, a MUI control interface, and an advanced SID music player with playlist 
-support for managing your C64 system remotely.
+Ultimate64 Manager & SID Player provides control over Commodore Ultimate 64 and
+Ultimate-II devices from AmigaOS. It includes three applications: a MUI control
+interface with built-in Assembly64 browser, a command-line tool, and an
+advanced SID music player with playlist support for managing your C64 system
+remotely.
 
-The package includes a static library for developers, CLI tool for scripting, 
-MUI control interface for interactive use, and a dedicated SID player with 
-playlist management. Control your C64 remotely through network connection with 
+You can control your C64 remotely through network connection with
 access to disk operations, program loading, memory access, and machine control.
 
 Applications included:
-- u64ctlMUI - MUI graphical control interface with tabbed organization
-- u64ctl - Complete CLI tool for scripting and automation
-- u64sidplayer - SID music player with playlist and subsong support
+- u64mui    - MUI graphical control interface with tabbed organization
+              and integrated Assembly64 browser (search CSDB/HVSC/OneLoad64,
+              download and run straight to the device, CSDB screenshot preview)
+- u64cli    - Complete CLI tool for scripting and automation
+- u64player - SID music player with playlist and subsong support
 
 Main features:
 - Load and run PRG files and CRT cartridges
@@ -34,8 +35,14 @@ Main features:
 - Static library for embedding in custom applications
 - Native AmigaOS integration with ENV: variable storage
 
+Assembly64 tab features:
+- Free-text search with category / source / rating / date filters
+- Paginated results with prev/next navigation
+- File listing per entry, mount or run directly on the Ultimate
+- CSDB screenshot preview (uses datatypes.library)
+
 SID Player features:
-- Playlist management with drag-and-drop support
+- Playlist management
 - Multi-subsong navigation within SID files
 - Song length database support (Songlengths.md5)
 - Auto-discovery of song databases
@@ -49,51 +56,48 @@ File format support:
 - Music: SID (PSID/RSID), MOD files
 
 CLI Examples:
-- u64ctl info                           # Device information
-- u64ctl reset                          # Reset C64
-- u64ctl mount FILE disk.d64 DRIVE a    # Mount disk image
-- u64ctl load FILE game.prg             # Load PRG file
-- u64ctl type TEXT "load\"*\",8,1"     # Type commands
-- u64ctl peek ADDRESS 0xd020            # Read memory
-- u64ctl playsid FILE music.sid         # Play SID file
+- u64cli info                           # Device information
+- u64cli reset                          # Reset C64
+- u64cli mount FILE disk.d64 DRIVE a    # Mount disk image
+- u64cli load FILE game.prg             # Load PRG file
+- u64cli type TEXT "load\"*\",8,1"      # Type commands
+- u64cli peek ADDRESS 0xd020            # Read memory
+- u64cli playsid FILE music.sid         # Play SID file
 
 SID Player usage:
-1. Copy Songlengths.md5 to program directory (optional)
-2. Configure Ultimate64 IP address in Settings
-3. Press Connect button
-4. Add SID files to playlist
-5. Double-click to play or use control buttons
+1. Configure Ultimate64 IP address in Settings
+2. Press Connect button
+3. Add SID files to playlist
+4. Double-click to play or use control buttons
 
 Requirements:
 - AmigaOS 3.0+
 - MUI 3.8+ (for GUI applications)
 - bsdsocket.library
 - TCP/IP stack (AmiTCP, Miami, Roadshow, etc.)
-- Ultimate64 or Ultimate-II device with network connectivity
-- At least 2MB RAM (8MB recommended for MUI applications)
+- Commodore Ultimate 64 or Ultimate-II device with network connectivity
+- At least 8MB RAM (16MB recommended for MUI applications)
 
 Package contents:
-- u64ctlMUI - MUI graphical control interface
-- u64ctl - Command-line interface tool
-- u64sidplayer - SID music player with playlist
+- u64mui          - MUI graphical control interface
+- u64cli          - Command-line interface tool
+- u64player       - SID music player with playlist
 - libultimate64.a - Static library for developers
 
 Credits:
 - Developed by Marcin Spoczynski @sandlbn
-- Tested with Ultimate64 firmware 3.12a
+- Tested with Ultimate64 firmware 3.14 and Commodore 1.10
 - Built with m68k-amigaos-gcc cross-compiler
 - Song length database support for HVSC format
+- Assembly64 API by Fredrik Åberg
 
 Source code: https://github.com/sandlbn/u64ctl
 
-Ultimate64 Control Library 0.3.0 (2025)
-- Added advanced SID music player with playlist support
-- Multi-subsong navigation and automatic advancement
-- Song length database integration (Songlengths.md5)
-- Enhanced MUI interfaces with improved user experience
-- Full Ultimate64/Ultimate-II device support
-- File format support (PRG, CRT, D64, G64, D71, G71, D81, SID, MOD)
-- Robust network communication with retry logic
-- Persistent configuration management through ENV: variables
-- Native Amiga integration with MUI interface
-- Complete developer API with static library
+Ultimate64 Manager & SID Player 0.4.0 (2025)
+- New Assembly64 tab: search, download, mount/run, CSDB screenshot preview
+- CSDB image preview
+- Non-blocking connect() with bounded timeout; fail-fast when bsdsocket.library
+  is not open so the app never hangs without a TCP stack
+- Fixed disk mount multipart format for current Ultimate firmware
+- Fixed exit hang via StackSwap in all three apps
+- SID player keyboard shortcuts and session restore

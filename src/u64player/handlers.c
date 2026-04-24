@@ -279,11 +279,28 @@ BOOL APP_Connect(void)
             return FALSE;
         }
 
-        /* Connect */
+        /* Connect. U64_Connect only builds a struct — it never hits
+         * the network — so we probe the device with a real call
+         * (GetDeviceInfo) to confirm reachability. Without this the
+         * UI would flip to "Connected" even with the C64 unplugged
+         * or the host misconfigured. */
+        APP_UpdateStatus("Connecting...");
         objApp->connection = U64_Connect(objApp->host,
             strlen(objApp->password) > 0 ? objApp->password : NULL);
 
+        BOOL reachable = FALSE;
         if (objApp->connection) {
+            U64DeviceInfo info;
+            if (U64_GetDeviceInfo(objApp->connection, &info) == U64_OK) {
+                reachable = TRUE;
+                U64_FreeDeviceInfo(&info);
+            } else {
+                U64_Disconnect(objApp->connection);
+                objApp->connection = NULL;
+            }
+        }
+
+        if (reachable) {
             char status[256];
             sprintf(status, "Connected to %s", objApp->host);
             set(objApp->TXT_ConnectionStatus, MUIA_Text_Contents, "Connected");
@@ -298,8 +315,11 @@ BOOL APP_Connect(void)
             set(objApp->BTN_Next, MUIA_Disabled, FALSE);
             set(objApp->BTN_Prev, MUIA_Disabled, FALSE);
         } else {
+            char status[256];
+            sprintf(status, "Connection failed (%s:80 unreachable?)",
+                    objApp->host);
             set(objApp->TXT_ConnectionStatus, MUIA_Text_Contents, "Disconnected");
-            APP_UpdateStatus("Connection failed");
+            APP_UpdateStatus(status);
 
             APP_UpdateSIDConfigDisplay();
         }
