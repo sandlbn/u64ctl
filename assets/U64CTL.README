@@ -4,8 +4,10 @@ Uploader:     marcin@spoczynski.com (Marcin Spoczynski)
 Type:         comm/misc
 Version:      0.4.0
 Architecture: m68k-amigaos >= 3.0
+URL:          https://github.com/sandlbn/u64ctl
 Requires:     MUI 3.8+, bsdsocket.library
 Distribution: Aminet
+Replaces:     comm/misc/u64ctl.lha
 Description:
 Ultimate64 Manager & SID Player provides control over Commodore Ultimate 64 and
 Ultimate-II devices from AmigaOS. It includes three applications: a MUI control
